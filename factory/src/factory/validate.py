@@ -54,6 +54,11 @@ def autofix(spec: AppSpec) -> list[str]:
     """Deterministic repairs that do not need a model call. Returns a log of fixes."""
     fixes: list[str] = normalize_enums(spec)
     if spec.demo:
+        events = {e.name for e in spec.events}
+        before = len(spec.demo.steps)
+        spec.demo.steps = [st for st in spec.demo.steps if st.action != "expect" or st.args.get("event") in events]
+        if len(spec.demo.steps) != before:
+            fixes.append(f"демо: убраны проверки без известного события ({before - len(spec.demo.steps)})")
         for st in spec.demo.steps:
             if st.action in ("operation", "create") and not st.expect_error and re.search(
                     r"пыта|отказ|запрещ|ошибк|невозможн|не может|недопустим|конфликт|отклон", st.title.lower()):
@@ -68,6 +73,22 @@ def autofix(spec: AppSpec) -> list[str]:
     spec.permissions = [p for p in spec.permissions if p.role in roles and p.entity in entities]
     if len(spec.permissions) != before:
         fixes.append("удалены права для неизвестных ролей/сущностей")
+    for p in spec.permissions:
+        e = next((x for x in spec.entities if x.name == p.entity), None)
+        if e is None or not ({"read_own", "update_own"} & set(p.actions)):
+            p.owner_field = None
+            continue
+        user_refs = [f for f in e.fields if f.type == "ref" and f.ref == "User"]
+        if p.owner_field and not any(f.name == p.owner_field for f in user_refs):
+            p.owner_field = None
+        if not p.owner_field and len(user_refs) > 1:
+            named = next((f.name for f in user_refs if p.role.lower() in f.name.lower()), None)
+            creator = next((f.name for f in user_refs if "create" in p.actions and
+                            re.search(r"creat|author|request|report|submit", f.name.lower())), None)
+            if named or creator:
+                p.owner_field = named or creator
+                if p.owner_field != e.owner_field:
+                    fixes.append(f"{p.role} видит свои {e.name} по полю {p.owner_field}")
     for e in spec.entities:
         if e.owner_field and not (f := e.field(e.owner_field)) or (e.owner_field and f and f.ref != "User"):
             fixes.append(f"{e.name}: owner_field {e.owner_field} не ссылается на User — сброшен")
@@ -171,7 +192,7 @@ def check(spec: AppSpec, data_files: set[str] | None = None, requirements: str =
                 except re.error:
                     errors.append(f"{e.name}.{f.name}: некорректное регулярное выражение")
         own = [p for p in spec.permissions if p.entity == e.name and ({"read_own", "update_own"} & set(p.actions))]
-        if own and not e.owner_field:
+        if own and not e.owner_field and not all(p.owner_field for p in own):
             errors.append(f"{e.name}: есть права *_own, но не задан owner_field (поле ref на User)")
     seen_routes: set[tuple[str, str]] = set()
     for o in spec.operations:

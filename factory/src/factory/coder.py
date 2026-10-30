@@ -85,6 +85,22 @@ def api_reference(spec: AppSpec) -> str:
     return "\n".join(lines)
 
 
+def system_contract(spec: AppSpec) -> str:
+    """What every operation and job does: shared assumptions keep independently written methods consistent."""
+    lines = ["# Контракт системы (все операции и задачи — их пишут другие разработчики по этим описаниям)"]
+    for e in spec.entities:
+        if e.lifecycle:
+            lc = e.lifecycle
+            lines.append(f"- Статусы {e.name}.{lc.field}: начальный {lc.initial}; переходы: " +
+                         "; ".join(f"{t.name}: {','.join(t.from_states)}→{t.to}" for t in lc.transitions))
+    for op in spec.operations:
+        lines.append(f"- Операция {op.name} ({op.method} /api/v1{op.path}): {op.description} События: {', '.join(op.emits) or '—'}")
+    for job in spec.jobs:
+        lines.append(f"- Задача {job.name}: {job.description} События: {', '.join(job.emits) or '—'}")
+    lines.append("Не дублируй чужую ответственность и не требуй от данных того, что другие операции не создают.")
+    return "\n".join(lines)
+
+
 def _acceptance_for(spec: AppSpec, covers: list[str]) -> str:
     acs = [a for a in spec.analysis.acceptance if a.fr in covers]
     return "\n".join(f"- {a.id} ({a.fr}): Дано {a.given}; Когда {a.when}; Тогда {a.then}" for a in acs) or "—"
@@ -113,7 +129,7 @@ def job_task(spec: AppSpec, job: Job) -> str:
 
 
 async def write_logic(llm: LLM, spec: AppSpec, extra_context: str = "") -> dict[str, dict]:
-    ref = api_reference(spec)
+    ref = api_reference(spec) + "\n```\n\n" + system_contract(spec) + "\n```csharp"
     tasks: list[tuple[str, str]] = [(op.name, op_task(spec, op)) for op in spec.operations]
     tasks += [(job.name, job_task(spec, job)) for job in spec.jobs]
 
@@ -139,7 +155,7 @@ def file_owner(spec: AppSpec, path: str) -> str | None:
 
 async def fix_logic(llm: LLM, spec: AppSpec, name: str, current: dict, file_text: str, errors: list[str],
                     runtime: bool = False) -> dict:
-    ref = api_reference(spec)
+    ref = api_reference(spec) + ("\n```\n\n" + system_contract(spec) + "\n```csharp" if runtime else "")
     numbered = "\n".join(f"{i + 1:4}: {line}" for i, line in enumerate(file_text.splitlines()))
     kind = "Ошибки при выполнении демо-сценария" if runtime else "Ошибки компилятора"
     entity_limits = "\n".join(f"- {e.name}.{f.name}: строка до {f.max_length} символов" for e in spec.entities for f in e.fields

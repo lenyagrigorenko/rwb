@@ -144,6 +144,8 @@ class Permission(BaseModel):
     role: str
     entity: str
     actions: list[CrudAction]
+    owner_field: str | None = PField(
+        default=None, description="ref(User) поле «своих» записей для этой роли, если отличается от owner_field сущности")
 
 
 class Operation(BaseModel):

@@ -169,7 +169,8 @@ class Pipeline:
         low_mem = runtime.low_memory()
         host = os.environ.get("PUBLIC_HOST", "10.0.2.2")
         api_url = f"http://{host}:{runtime.ports_for(out.name)['API_PORT']}" if host != "10.0.2.2" else None
-        if spec.has_mobile and build_ok and not low_mem:
+        apk_enabled = os.environ.get("FACTORY_APK", "on") != "off"
+        if spec.has_mobile and build_ok and not low_mem and apk_enabled:
             apk_task = asyncio.create_task(builder.build_apk(out / "mobile", api_url))
             self.log("Сборка Android-приложения запущена параллельно с проверками")
 
@@ -182,7 +183,7 @@ class Pipeline:
             self.state.result["video"] = bool(verification.get("video"))
             self.stage("verify", "done", verification.get("summary", ""))
 
-        if spec.has_mobile and build_ok and low_mem and os.environ.get("FACTORY_APK", "on") != "off":
+        if spec.has_mobile and build_ok and low_mem and apk_enabled:
             self.log("Мало памяти: Android-приложение собирается после проверок")
             apk_task = asyncio.create_task(builder.build_apk(out / "mobile", api_url, low_memory=True))
         if apk_task:

@@ -117,7 +117,7 @@ public sealed class DemoScenarioRunner(IServiceScopeFactory scopes, IHttpClientF
                             foreach (var p in leg)
                             {
                                 var body = new JsonObject { [step["latField"]!.ToString()] = p.Lat, [step["lonField"]!.ToString()] = p.Lon };
-                                foreach (var (k, v) in step["extra"]?.AsObject() ?? new JsonObject()) body[k] = v?.DeepClone();
+                                foreach (var (k, v) in step["extra"]?.AsObject() ?? new JsonObject()) body[k] = Special(v);
                                 await SendAsync(client, step["method"]!.ToString(), path, body, ct);
                                 await Task.Delay(TimeSpan.FromMilliseconds(900), ct);
                             }
@@ -129,6 +129,7 @@ public sealed class DemoScenarioRunner(IServiceScopeFactory scopes, IHttpClientF
                             var (client, userId) = await ClientAsync(step["login"]!.ToString(), ct);
                             var path = await ResolvePathAsync(step["path"]!.ToString(), userId, vars, ct);
                             var args = step["args"]?.DeepClone()?.AsObject() ?? new JsonObject();
+                            foreach (var key in args.Select(kv => kv.Key).ToList()) args[key] = Special(args[key]);
                             await ResolveArgsAsync(args, step["resolve"]?.AsObject(), userId, vars, ct);
                             if (step["expectError"]?.GetValue<bool>() == true)
                             {
@@ -187,6 +188,14 @@ public sealed class DemoScenarioRunner(IServiceScopeFactory scopes, IHttpClientF
             Running = false;
         }
     }
+
+    /// <summary>Значения-заглушки сценария: $now — текущее время приложения, $today — текущая дата.</summary>
+    private JsonNode? Special(JsonNode? value) => value?.ToString() switch
+    {
+        "$now" => JsonValue.Create(clock.GetUtcNow().ToString("O")),
+        "$today" => JsonValue.Create(AppTime.ToLocal(clock.GetUtcNow()).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)),
+        _ => value?.DeepClone(),
+    };
 
     private async Task<string?> WaitEventAsync(string type, DateTimeOffset since, CancellationToken ct)
     {
@@ -295,6 +304,19 @@ public sealed class DemoScenarioRunner(IServiceScopeFactory scopes, IHttpClientF
                 {
                     var offset = spec!["offsetMinutes"]!.GetValue<int>();
                     args[key] = _timeBase.AddMinutes(offset).ToString("O");
+                    break;
+                }
+                case "date":
+                {
+                    // Отдельные дата и время в сценарии понимаются как местное время (Europe/Moscow).
+                    var local = AppTime.ToLocal(_timeBase).Date.AddMinutes(spec!["offsetMinutes"]!.GetValue<int>());
+                    args[key] = local.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+                    break;
+                }
+                case "clock":
+                {
+                    var local = AppTime.ToLocal(_timeBase).AddMinutes(spec!["offsetMinutes"]!.GetValue<int>());
+                    args[key] = local.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture);
                     break;
                 }
                 case "geo":

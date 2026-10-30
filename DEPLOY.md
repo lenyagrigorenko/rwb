@@ -190,6 +190,41 @@ cd /Users/lenya/rwb/factory && uv run factory doctor && uv run factory serve
 Без интернета на VM, но с Docker: заранее на ноутбуке `docker save` нужных образов → `scp` → `docker load` на VM;
 кэши NuGet/npm/Gradle перенести томами (`docker run --rm -v nuget-cache:/v -v $PWD:/b alpine tar czf /b/nuget.tgz -C /v .`).
 
+## 9.1. Android без доступа к Google
+
+Если `vm-setup.sh` пишет «Сборщик Android НЕ СОБРАН» (таймаут к `dl.google.com` / `services.gradle.org`),
+фабрика работает без APK (`FACTORY_APK=off`). Чтобы вернуть APK, перенесите с ноутбука готовый образ и кэш Gradle
+(зависимости у всех генерируемых приложений одинаковые, поэтому кэша с ноутбука достаточно).
+
+На Mac (из `/Users/lenya/rwb`):
+
+```bash
+docker save factory/android-builder:1 | gzip > android-builder.tar.gz
+docker run --rm -v gradle-cache:/v -v "$PWD":/b alpine tar czf /b/gradle-cache.tgz -C /v .
+scp -P 10023 android-builder.tar.gz gradle-cache.tgz team23@85.143.113.230:~/
+```
+
+На VM:
+
+```bash
+gunzip -c ~/android-builder.tar.gz | docker load
+docker volume create gradle-cache
+docker run --rm -v gradle-cache:/v -v ~/:/b alpine tar xzf /b/gradle-cache.tgz -C /v
+cd ~/rwb/factory
+sed -i 's/^FACTORY_APK=.*/FACTORY_APK=on/' .env
+grep -q '^FACTORY_GRADLE_OFFLINE=' .env || echo 'FACTORY_GRADLE_OFFLINE=1' >> .env
+```
+
+## 9.2. Запуск через sudo
+
+Скрипт и фабрику лучше запускать от `team23`, не от root. Один раз:
+
+```bash
+sudo usermod -aG docker team23     # затем выйти из SSH и зайти снова
+sudo chown -R team23:team23 ~/rwb  # если уже запускали через sudo
+docker ps                          # должно работать без sudo
+```
+
 ## 10. Частые проблемы
 
 | Симптом | Причина и решение |
@@ -200,6 +235,7 @@ cd /Users/lenya/rwb/factory && uv run factory doctor && uv run factory serve
 | 429 / таймауты модели | уменьшить `LLM_CONCURRENCY` до 2, сообщить организаторам |
 | сборка .NET: restore error | нет доступа к api.nuget.org; прогреть кэш (раздел 9) |
 | стенд не поднимается: порт занят | `docker ps`, остановить старые стенды: `cd ~/rwb/out/<slug> && docker compose down` |
+| `vm-setup.sh`: exit code 28 на «Сборщик Android» | таймаут к dl.google.com — раздел 9.1 (скрипт продолжит без APK) |
 | APK не собирается | нет образа `factory/android-builder:1` — `docker build -t factory/android-builder:1 factory/docker/android-builder`; при 4 ГБ без swap — `FACTORY_APK=off` |
 | OOM / контейнеры падают с кодом 137 | мало памяти: добавить swap (раздел 0.1), остановить лишние стенды `docker ps` |
 | нет видео демо | нет образа Playwright — `docker pull mcr.microsoft.com/playwright:v1.64.1-noble` |

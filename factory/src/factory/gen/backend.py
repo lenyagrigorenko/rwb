@@ -192,6 +192,8 @@ def entity_vm(spec: AppSpec, e: Entity) -> dict:
         "search_fields": search,
         "ref_fields": [fv for fv in fields if fv["type"] == "ref"],
         "Owner": n.pascal(e.owner_field) if e.owner_field else None,
+        "own_filters": [{"role": p.role, "Field": n.pascal(p.owner_field)} for p in spec.permissions
+                        if p.entity == e.name and p.owner_field and p.owner_field != e.owner_field],
         "geo": geo,
         "label_expr": entity_label_expr(e),
         "geo_props": [{"name": f.name, "expr": x} for f in e.fields if f.list_visible
@@ -433,8 +435,7 @@ def demo_script(spec: AppSpec) -> dict:
     datasets_geo = [d.entity for d in spec.datasets if (x := spec.entity(d.entity)) and x.geo_fields]
     geo_entities = [e.name for e in spec.entities if e.geo_fields]
     steps = []
-    times = sorted(_iso(v) for st in spec.demo.steps for v in st.args.values() if _iso(v))
-    base = times[0] if times else None
+    base = _demo_time_base(spec)
     for s in spec.demo.steps:
         st: dict = {"id": s.id, "title": s.title, "action": s.action, "expectError": s.expect_error}
         op = ops.get(s.operation or "")
@@ -452,11 +453,12 @@ def demo_script(spec: AppSpec) -> dict:
             names = {f.name.lower(): f.name for f in op.input}
             st["latField"] = next((names[k] for k in ("lat", "latitude") if k in names), "lat")
             st["lonField"] = next((names[k] for k in ("lon", "lng", "longitude") if k in names), "lon")
-            st["extra"] = {f.name: 25 for f in op.input
+            st["extra"] = {f.name: _default_input(f) for f in op.input
                            if f.name not in (st["latField"], st["lonField"])
-                           and f.type in ("int", "decimal") and "speed" in f.name.lower()}
+                           and (f.required or "speed" in f.name.lower())}
         elif s.action == "operation" and op:
-            st["args"] = s.args
+            st["args"] = {**{f.name: _default_input(f) for f in op.input if f.required and f.name not in s.args
+                             and f.name not in op.path_params}, **s.args}
             st["resolve"] = {**demo_resolvers(spec, op, s.args), **_time_resolvers(s.args, base)}
             if op.output_entity:
                 st["outputVar"] = n.camel(op.output_entity) + "Id"
@@ -496,13 +498,62 @@ def _iso(v):
     return None
 
 
+def _default_input(f: Field):
+    """Value for a required input the demo step did not specify."""
+    if f.type == "datetime":
+        return "$now"
+    if f.type in ("int", "decimal", "money"):
+        if "speed" in f.name.lower():
+            return 25
+        return f.min if f.min is not None and f.min > 0 else (1 if f.type == "int" else 1.0)
+    if f.type == "bool":
+        return False
+    if f.type == "enum" and f.enum_values:
+        return f.enum_values[0]
+    if f.type == "date":
+        return "$today"
+    return f.examples[0] if f.examples else "Демо"
+
+
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+CLOCK_RE = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
+
+
+def _demo_time_base(spec: AppSpec):
+    """Earliest moment mentioned in demo args: full ISO, or earliest date + earliest HH:MM."""
+    from datetime import datetime, timedelta
+    values = [v for st in spec.demo.steps for v in st.args.values() if isinstance(v, str)]
+    full = sorted(t for v in values if (t := _iso(v)))
+    if full:
+        return full[0]
+    dates = sorted(v for v in values if DATE_RE.match(v))
+    clocks = sorted(v for v in values if CLOCK_RE.match(v))
+    if not dates and not clocks:
+        return None
+    day = datetime.fromisoformat(dates[0]) if dates else datetime(2026, 1, 1)
+    h, m = (clocks[0].split(":") if clocks else ("0", "0"))
+    return day + timedelta(hours=int(h), minutes=int(m))
+
+
 def _time_resolvers(args: dict, base) -> dict:
     """Absolute demo times become offsets from a base aligned to the app clock (start ≈ now + 60 min)."""
+    from datetime import datetime
     out = {}
+    if base is None:
+        return out
+    naive = base.replace(tzinfo=None)
+    day = next((datetime.fromisoformat(v) for v in args.values() if isinstance(v, str) and DATE_RE.match(v)), None)
     for k, v in args.items():
-        t = _iso(v)
-        if t is not None and base is not None:
-            out[k] = {"kind": "time", "offsetMinutes": int((t - base).total_seconds() // 60)}
+        if not isinstance(v, str):
+            continue
+        if (t := _iso(v)) is not None:
+            out[k] = {"kind": "time", "offsetMinutes": int((t.replace(tzinfo=None) - naive).total_seconds() // 60)}
+        elif DATE_RE.match(v):
+            out[k] = {"kind": "date", "offsetMinutes": int((datetime.fromisoformat(v) - naive.replace(hour=0, minute=0)).total_seconds() // 60)}
+        elif CLOCK_RE.match(v):
+            h, m = map(int, v.split(":"))
+            moment = (day or naive).replace(hour=h, minute=m)
+            out[k] = {"kind": "clock", "offsetMinutes": int((moment - naive).total_seconds() // 60)}
     return out
 
 

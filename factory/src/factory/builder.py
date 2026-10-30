@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,6 +65,8 @@ ANDROID_BUILDER = "factory/android-builder:1"
 async def build_apk(mobile: Path, api_url: str | None = None, low_memory: bool = False) -> tuple[bool, Path | None, str]:
     """assembleDebug in the Android builder image; returns the APK path."""
     args = ["gradle", "assembleDebug", "--no-daemon", "-q"]
+    if os.environ.get("FACTORY_GRADLE_OFFLINE") == "1":
+        args.append("--offline")
     if low_memory:
         args += ["--max-workers=1", "-Dorg.gradle.jvmargs=-Xmx1g -XX:MaxMetaspaceSize=384m",
                  "-Pkotlin.compiler.execution.strategy=in-process"]

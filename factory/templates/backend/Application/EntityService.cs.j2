@@ -20,15 +20,38 @@ public sealed class {{e.name}}Service(IAppDbContext db, ICurrentUser user, TimeP
     public IQueryable<{{e.name}}> Visible()
     {
         if (Permissions.Can(user.Role, Entity, "read")) return db.{{vm.set}};
-{% if e.owner_field %}
+{% if e.owner_field or vm.own_filters %}
         if (Permissions.Can(user.Role, Entity, "read_own"))
         {
             var uid = user.RequireUserId();
-            return db.{{vm.set}}.Where(x => x.{{vm.Owner}} == uid);
+            return user.Role switch
+            {
+{% for f in vm.own_filters %}
+                "{{f.role}}" => db.{{vm.set}}.Where(x => x.{{f.Field}} == uid),
+{% endfor %}
+{% if vm.Owner %}
+                _ => db.{{vm.set}}.Where(x => x.{{vm.Owner}} == uid),
+{% else %}
+                _ => throw new ForbiddenException(),
+{% endif %}
+            };
         }
 {% endif %}
         throw new ForbiddenException();
     }
+
+    /// <summary>Запись принадлежит текущему пользователю (по полю-владельцу его роли).</summary>
+    private bool IsOwn({{e.name}} entity) => user.Role switch
+    {
+{% for f in vm.own_filters %}
+        "{{f.role}}" => entity.{{f.Field}} == user.UserId,
+{% endfor %}
+{% if vm.Owner %}
+        _ => entity.{{vm.Owner}} == user.UserId,
+{% else %}
+        _ => false,
+{% endif %}
+    };
 
     public async Task<PagedResult<{{e.name}}Dto>> ListAsync(ListQuery q, {{e.name}}Filter f, CancellationToken ct)
     {
@@ -95,8 +118,8 @@ public sealed class {{e.name}}Service(IAppDbContext db, ICurrentUser user, TimeP
     public async Task<{{e.name}}Dto> UpdateAsync(Guid id, {{e.name}}UpsertRequest r, CancellationToken ct)
     {
         var entity = await GetAccessibleAsync(id, ct);
-        var allowed = Permissions.Can(user.Role, Entity, "update"){% if e.owner_field %}
-            || (Permissions.Can(user.Role, Entity, "update_own") && entity.{{vm.Owner}} == user.UserId){% endif %};
+        var allowed = Permissions.Can(user.Role, Entity, "update")
+            || (Permissions.Can(user.Role, Entity, "update_own") && IsOwn(entity));
         if (!allowed) throw new ForbiddenException();
         await ApplyAsync(entity, r, ct);
         entity.UpdatedAt = clock.GetUtcNow();

@@ -126,6 +126,7 @@ def failed_targets(spec: AppSpec, status: dict) -> dict[str, list[str]]:
             emitters.setdefault(ev, job.name)
     targets: dict[str, list[str]] = {}
     last_op_ok: dict[str, bool] = {}
+    flow = "Ход демо-сценария: " + "; ".join(f"{st['title']} — {st.get('status')}" for st in status.get("steps", []))
     for st in status.get("steps", []):
         step = by_id.get(st["id"])
         if not step:
@@ -139,7 +140,7 @@ def failed_targets(spec: AppSpec, status: dict) -> dict[str, list[str]]:
             continue
         if step.action in ("operation", "route") and step.operation:
             # Only real HTTP failures are logic bugs; missing data is not.
-            if re.search(r": (400|5\d\d) ", detail) and not detail.startswith("Не найдено"):
+            if re.search(r": (400|422|5\d\d) ", detail) and not detail.startswith("Не найдено"):
                 targets.setdefault(step.operation, []).append(f"Шаг «{step.title}»: {detail[:700]}")
         elif step.action == "expect":
             ev = step.args.get("event", "")
@@ -147,4 +148,4 @@ def failed_targets(spec: AppSpec, status: dict) -> dict[str, list[str]]:
             if owner and owner not in targets and last_op_ok.get(owner, owner in {j.name for j in spec.jobs}):
                 targets.setdefault(owner, []).append(
                     f"Шаг «{step.title}»: событие {ev} не было опубликовано, хотя предыдущие шаги выполнены")
-    return targets
+    return {k: v + [flow] for k, v in targets.items()}
