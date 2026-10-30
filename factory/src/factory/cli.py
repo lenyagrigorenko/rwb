@@ -35,7 +35,8 @@ def main() -> None:
         doctor()
     elif args.cmd == "serve":
         import uvicorn
-        uvicorn.run("factory.server:app", host="0.0.0.0", port=args.port)
+        # Открытые SSE-потоки браузера не должны задерживать остановку (иначе порт остаётся занят при перезапуске).
+        uvicorn.run("factory.server:app", host="0.0.0.0", port=args.port, timeout_graceful_shutdown=3)
 
 
 if __name__ == "__main__":
