@@ -1,0 +1,36 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}
+using Microsoft.Extensions.DependencyInjection;
+{% if spec.jobs %}
+using {{N}}.Application.Jobs;
+{% endif %}
+{% if spec.operations %}
+using {{N}}.Application.Operations;
+{% endif %}
+using {{N}}.Application.Services;
+
+namespace {{N}}.Application;
+
+/// <summary>Фоновая задача, запускаемая планировщиком с интервалом <see cref="Interval"/>.</summary>
+public interface IJob
+{
+    string Name { get; }
+    TimeSpan Interval { get; }
+    Task RunAsync(CancellationToken ct);
+}
+
+public static class DependencyInjection
+{
+    public static IServiceCollection AddApplication(this IServiceCollection services)
+    {
+{% for e in spec.entities %}
+        services.AddScoped<{{e.name}}Service>();
+{% endfor %}
+{% for op in spec.operations %}
+        services.AddScoped<{{op.name}}Handler>();
+{% endfor %}
+{% for job in spec.jobs %}
+        services.AddScoped<IJob, {{job.name}}Job>();
+{% endfor %}
+        return services;
+    }
+}

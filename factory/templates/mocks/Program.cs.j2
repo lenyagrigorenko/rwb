@@ -1,0 +1,31 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}
+// Mock-сервис внешних интеграций. Ответы задаются в mocks.json; {поле} подставляется из запроса.
+using System.Collections.Concurrent;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
+
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+var calls = new ConcurrentQueue<object>();
+var spec = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "mocks.json")))!.AsArray();
+
+foreach (var route in spec)
+{
+    var path = route!["path"]!.ToString();
+    var template = route["response"]!.ToJsonString();
+    app.MapPost(path, async (HttpContext ctx) =>
+    {
+        var body = await JsonNode.ParseAsync(ctx.Request.Body) as JsonObject ?? new JsonObject();
+        var lookup = body.ToDictionary(kv => kv.Key.ToLowerInvariant(), kv => kv.Value?.ToString() ?? "");
+        var json = Regex.Replace(template, @"\{(\w+)\}", m =>
+            lookup.TryGetValue(m.Groups[1].Value.ToLowerInvariant(), out var v) ? Uri.EscapeDataString(v) : m.Value);
+        calls.Enqueue(new { at = DateTimeOffset.UtcNow, path, request = body.ToJsonString() });
+        while (calls.Count > 200) calls.TryDequeue(out _);
+        return Results.Content(json, "application/json");
+    });
+}
+
+app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+app.MapGet("/api/_calls", () => Results.Ok(calls.Reverse()));
+app.Run();

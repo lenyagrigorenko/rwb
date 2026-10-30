@@ -1,0 +1,176 @@
+# CI/CD «{{spec.product_name}}»: сборка, тесты, анализ безопасности, образы, развёртывание тестового стенда.
+stages: [build, test, security, package, deploy]
+
+variables:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  NUGET_PACKAGES: "$CI_PROJECT_DIR/.nuget"
+  SOLUTION: "backend/{{N}}.slnx"
+
+.dotnet:
+  image: mcr.microsoft.com/dotnet/sdk:10.0
+  cache:
+    key: nuget-$CI_COMMIT_REF_SLUG
+    paths: [.nuget/]
+
+backend:build:
+  extends: .dotnet
+  stage: build
+  script:
+    - dotnet build "$SOLUTION" -c Release -warnaserror:false
+  artifacts:
+    paths: [backend/src/*/bin/Release/]
+    expire_in: 1 day
+
+frontend:build:
+  stage: build
+  image: node:22-alpine
+  cache:
+    key: npm-$CI_COMMIT_REF_SLUG
+    paths: [frontend/.npm/]
+  script:
+    - cd frontend
+    - npm ci --cache .npm --prefer-offline --no-audit --no-fund
+    - npm run lint:uikit | tee ../uikit-lint.txt
+    - npx ng build --configuration production
+  artifacts:
+    paths: [frontend/dist/, uikit-lint.txt]
+    expire_in: 1 week
+
+backend:unit-tests:
+  extends: .dotnet
+  stage: test
+  script:
+    - dotnet test "$SOLUTION" --filter "Category!=Integration" --logger "junit;LogFilePath=$CI_PROJECT_DIR/reports/unit.xml"
+  artifacts:
+    when: always
+    reports:
+      junit: reports/unit.xml
+    paths: [reports/]
+
+backend:integration-tests:
+  extends: .dotnet
+  stage: test
+  services:
+    - name: docker:27-dind
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    TESTCONTAINERS_HOST_OVERRIDE: docker
+  script:
+    - dotnet test "$SOLUTION" --filter "Category=Integration" --logger "junit;LogFilePath=$CI_PROJECT_DIR/reports/integration.xml"
+  artifacts:
+    when: always
+    reports:
+      junit: reports/integration.xml
+    paths: [reports/]
+
+security:dependencies:
+  extends: .dotnet
+  stage: security
+  script:
+    - mkdir -p reports
+    - dotnet list "$SOLUTION" package --vulnerable --include-transitive | tee reports/nuget-vulnerable.txt
+    - "! grep -E 'Critical|High' reports/nuget-vulnerable.txt"
+  artifacts:
+    when: always
+    paths: [reports/]
+  allow_failure: true
+
+security:npm-audit:
+  stage: security
+  image: node:22-alpine
+  script:
+    - mkdir -p reports && cd frontend
+    - npm audit --omit=dev --json > ../reports/npm-audit.json || true
+    - npm audit --omit=dev --audit-level=high
+  artifacts:
+    when: always
+    paths: [reports/]
+  allow_failure: true
+
+security:trivy:
+  stage: security
+  image:
+    name: aquasec/trivy:0.58.1
+    entrypoint: [""]
+  script:
+    - mkdir -p reports
+    - trivy fs --scanners vuln,misconfig,secret --format json --output reports/trivy.json .
+    - trivy fs --scanners vuln,misconfig,secret --severity HIGH,CRITICAL --exit-code 1 .
+  artifacts:
+    when: always
+    paths: [reports/]
+  allow_failure: true
+
+security:gitleaks:
+  stage: security
+  image:
+    name: zricethezav/gitleaks:v8.21.2
+    entrypoint: [""]
+  script:
+    - mkdir -p reports
+    - gitleaks detect --no-git --source . --report-format json --report-path reports/gitleaks.json
+  artifacts:
+    when: always
+    paths: [reports/]
+
+security:semgrep:
+  stage: security
+  image: semgrep/semgrep:1.99.0
+  script:
+    - mkdir -p reports
+    - semgrep scan --config p/csharp --config p/typescript --sarif --output reports/semgrep.sarif --error || true
+  artifacts:
+    when: always
+    paths: [reports/]
+  allow_failure: true
+{% if spec.has_mobile %}
+
+mobile:build:
+  stage: build
+  image: mingc/android-build-box:1.29.0
+  script:
+    - cd mobile
+    - chmod +x gradlew
+    - ./gradlew --no-daemon assembleDebug
+  artifacts:
+    paths: [mobile/app/build/outputs/apk/debug/*.apk]
+    expire_in: 1 week
+  allow_failure: true
+{% endif %}
+
+package:images:
+  stage: package
+  image: docker:27
+  services:
+    - name: docker:27-dind
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  rules:
+    - if: $CI_REGISTRY
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - for svc in backend frontend{% if spec.integrations %} mocks{% endif %}; do docker build -t "$CI_REGISTRY_IMAGE/$svc:$CI_COMMIT_SHORT_SHA" "$svc" && docker push "$CI_REGISTRY_IMAGE/$svc:$CI_COMMIT_SHORT_SHA"; done
+
+deploy:test:
+  stage: deploy
+  image: docker:27
+  services:
+    - name: docker:27-dind
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  environment:
+    name: test
+  script:
+    - cp .env.example .env
+    - docker compose up -d --build --wait
+    - apk add --no-cache bash curl
+    - API_URL=http://docker:8080 ./scripts/smoke.sh | tee smoke.txt
+  artifacts:
+    when: always
+    paths: [smoke.txt]

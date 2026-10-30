@@ -1,0 +1,79 @@
+@use '@angular/material' as mat;
+
+html {
+  color-scheme: light;
+  @include mat.theme((
+    color: (primary: mat.$azure-palette, tertiary: mat.$blue-palette),
+    typography: Roboto,
+    density: 0,
+  ));
+}
+
+html, body { height: 100%; }
+body { margin: 0; font-family: Roboto, 'Helvetica Neue', Arial, sans-serif; background: var(--mat-sys-surface-container-lowest); color: var(--mat-sys-on-surface); }
+
+.shell { height: 100vh; }
+.shell-nav { width: 260px; border-right: 1px solid var(--mat-sys-outline-variant); }
+.brand { padding: 20px 16px; font: var(--mat-sys-title-medium); color: var(--mat-sys-primary); }
+.active-link { background: var(--mat-sys-secondary-container); border-radius: 24px; }
+.shell-toolbar { position: sticky; top: 0; z-index: 2; background: var(--mat-sys-surface); border-bottom: 1px solid var(--mat-sys-outline-variant); }
+.spacer { flex: 1 1 auto; }
+.content { padding: 24px; max-width: 1400px; margin: 0 auto; }
+:host-context(.mobile) .content, .mobile .content { padding: 12px; }
+
+.page-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+.page-header h1 { margin: 4px 0; font: var(--mat-sys-headline-small); }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.muted { color: var(--mat-sys-on-surface-variant); margin: 0; }
+
+.toolbar-row { display: flex; gap: 12px; flex-wrap: wrap; padding: 16px 16px 0; }
+.toolbar-row .search { flex: 1 1 280px; }
+.toolbar-row .filter { width: 200px; }
+.table-wrap { overflow-x: auto; }
+.full-width { width: 100%; }
+.clickable { cursor: pointer; }
+.clickable:hover { background: var(--mat-sys-surface-container); }
+
+.form-grid { display: grid; gap: 8px; }
+.form-grid.two-col { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.span-2 { grid-column: 1 / -1; }
+.form-actions { display: flex; justify-content: flex-end; }
+.mono { font-family: 'JetBrains Mono', Menlo, monospace; font-size: 12px; white-space: pre-wrap; }
+
+.detail-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); gap: 16px; align-items: start; }
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-bottom: 16px; }
+.kpi { padding: 16px; }
+.kpi-value { font: var(--mat-sys-display-small); color: var(--mat-sys-primary); }
+.kpi-title { color: var(--mat-sys-on-surface-variant); }
+.widget-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); gap: 16px; }
+.demo-grid { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(0, 1.4fr); gap: 16px; margin-top: 12px; }
+.demo-side { display: grid; gap: 16px; }
+.step-detail { white-space: normal !important; }
+.step-done mat-icon { color: #2e7d32; }
+.step-failed mat-icon { color: #c62828; }
+.step-running mat-icon { color: var(--mat-sys-primary); animation: spin 1.2s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.geo-map { width: 100%; border-radius: 12px; overflow: hidden; }
+.geo-preview { height: 220px; border-radius: 12px; overflow: hidden; margin-top: 8px; }
+.map-popup-title { font-weight: 500; margin-bottom: 4px; }
+
+.state { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 48px 16px; color: var(--mat-sys-on-surface-variant); }
+.state-icon { font-size: 40px; width: 40px; height: 40px; }
+.state-error { color: var(--mat-sys-error); }
+
+.login-page { min-height: 100vh; display: grid; place-items: center; padding: 16px; background: linear-gradient(135deg, var(--mat-sys-primary-container), var(--mat-sys-surface)); }
+.login-card { width: min(420px, 100%); }
+.hint { margin: 16px 0 8px; color: var(--mat-sys-on-surface-variant); }
+.error-text { color: var(--mat-sys-error); margin: 0; }
+.snack-error { --mdc-snackbar-container-color: var(--mat-sys-error-container); }
+
+.chip-Active { --mdc-chip-elevated-container-color: #e3f2fd; }
+.chip-Expiring { --mdc-chip-elevated-container-color: #fff3e0; }
+.chip-Expired { --mdc-chip-elevated-container-color: #ffebee; }
+.chip-Closed { --mdc-chip-elevated-container-color: #eceff1; }
+
+@media (max-width: 900px) {
+  .detail-grid, .widget-grid, .demo-grid { grid-template-columns: 1fr; }
+  .toolbar-row .filter { width: 100%; }
+}

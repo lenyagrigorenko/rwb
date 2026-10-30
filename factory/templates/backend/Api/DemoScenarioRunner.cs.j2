@@ -1,0 +1,346 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using Microsoft.EntityFrameworkCore;
+using {{N}}.Api.Infrastructure;
+using {{N}}.Application.Abstractions;
+using {{N}}.Infrastructure;
+using {{N}}.Infrastructure.Persistence;
+
+namespace {{N}}.Api.Demo;
+
+public sealed class DemoStepState
+{
+    public string Id { get; init; } = "";
+    public string Title { get; init; } = "";
+    public string Action { get; init; } = "";
+    public string Status { get; set; } = "pending";
+    public string? Detail { get; set; }
+    public DateTimeOffset? At { get; set; }
+}
+
+public sealed class DemoExpectationException(string message) : InvalidOperationException(message);
+
+public sealed record DemoStatus(string Title, bool Running, double ClockOffsetMinutes, IReadOnlyList<DemoStepState> Steps);
+
+/// <summary>
+/// Исполняет демонстрационный сценарий из требований через настоящий API (с аутентификацией ролей),
+/// со сдвигом часов для событий, зависящих от времени. Шаги — Demo/demo.json (из IR).
+/// </summary>
+public sealed class DemoScenarioRunner(IServiceScopeFactory scopes, IHttpClientFactory httpFactory, DemoTimeProvider clock, JobRunner jobs, JwtTokenService tokens, ILogger<DemoScenarioRunner> log)
+{
+    private static readonly JsonObject Script = LoadScript();
+    private readonly object _lock = new();
+    private List<DemoStepState> _steps = NewSteps();
+    private int _runs;
+    private DateTimeOffset _timeBase;
+
+    public bool Running { get; private set; }
+
+    public DemoStatus Status
+    {
+        get
+        {
+            lock (_lock) return new DemoStatus(Script["title"]?.ToString() ?? "", Running, clock.Offset.TotalMinutes, _steps.ToList());
+        }
+    }
+
+    public bool Start()
+    {
+        lock (_lock)
+        {
+            if (Running) return false;
+            Running = true;
+            _steps = NewSteps();
+        }
+        _ = Task.Run(RunAsync);
+        return true;
+    }
+
+    private static JsonObject LoadScript()
+    {
+        using var stream = typeof(DemoScenarioRunner).Assembly.GetManifestResourceStream("demo.json")!;
+        return JsonNode.Parse(stream)!.AsObject();
+    }
+
+    private static List<DemoStepState> NewSteps() =>
+        (Script["steps"]?.AsArray() ?? new JsonArray()).Select(s => new DemoStepState
+        {
+            Id = s!["id"]!.ToString(),
+            Title = s["title"]!.ToString(),
+            Action = s["action"]!.ToString(),
+        }).ToList();
+
+    private async Task RunAsync()
+    {
+        var ct = CancellationToken.None;
+        var vars = new Dictionary<string, string>();
+        DemoRoute? route = null;
+        try
+        {
+            if (Interlocked.Increment(ref _runs) > 1)
+            {
+                // Повторный прогон: сдвигаем часы, чтобы сессии прошлого прогона завершились.
+                clock.Advance(TimeSpan.FromHours(3));
+                await jobs.RunAllAsync(true, ct);
+            }
+            var since = clock.GetUtcNow().AddSeconds(-1);
+            if (Script["timeBase"]?.GetValue<bool>() == true)
+            {
+                // Времена из сценария отсчитываются от ближайшей «круглой» отметки (шаг 15 мин) через час.
+                var target = clock.GetUtcNow().AddMinutes(60);
+                var aligned = new DateTimeOffset(target.Ticks - target.Ticks % TimeSpan.FromMinutes(15).Ticks, TimeSpan.Zero).AddMinutes(15);
+                clock.Advance(aligned - target);
+                _timeBase = aligned;
+            }
+            var steps = Script["steps"]!.AsArray();
+            for (var i = 0; i < steps.Count; i++)
+            {
+                var step = steps[i]!.AsObject();
+                var state = _steps[i];
+                state.Status = "running";
+                state.At = clock.GetUtcNow();
+                try
+                {
+                    switch (state.Action)
+                    {
+                        case "route":
+                        {
+                            using var scope = scopes.CreateScope();
+                            var planner = scope.ServiceProvider.GetRequiredService<IDemoRoutePlanner>();
+                            route ??= await planner.PlanAsync(step["layer"]!.ToString(), step["zones"]!.GetValue<int>(), ct);
+                            var leg = route.Legs[Math.Min(step["leg"]!.GetValue<int>(), route.Legs.Count - 1)];
+                            var (client, userId) = await ClientAsync(step["login"]!.ToString(), ct);
+                            var path = await ResolvePathAsync(step["path"]!.ToString(), userId, vars, ct);
+                            foreach (var p in leg)
+                            {
+                                var body = new JsonObject { [step["latField"]!.ToString()] = p.Lat, [step["lonField"]!.ToString()] = p.Lon };
+                                foreach (var (k, v) in step["extra"]?.AsObject() ?? new JsonObject()) body[k] = v?.DeepClone();
+                                await SendAsync(client, step["method"]!.ToString(), path, body, ct);
+                                await Task.Delay(TimeSpan.FromMilliseconds(900), ct);
+                            }
+                            state.Detail = $"Точек маршрута: {leg.Count}";
+                            break;
+                        }
+                        case "operation":
+                        {
+                            var (client, userId) = await ClientAsync(step["login"]!.ToString(), ct);
+                            var path = await ResolvePathAsync(step["path"]!.ToString(), userId, vars, ct);
+                            var args = step["args"]?.DeepClone()?.AsObject() ?? new JsonObject();
+                            await ResolveArgsAsync(args, step["resolve"]?.AsObject(), userId, vars, ct);
+                            if (step["expectError"]?.GetValue<bool>() == true)
+                            {
+                                try
+                                {
+                                    await SendAsync(client, step["method"]!.ToString(), path, args, ct);
+                                    throw new DemoExpectationException("Ожидался отказ, но операция выполнена");
+                                }
+                                catch (InvalidOperationException ex) when (ex is not DemoExpectationException && ex.Message.Contains(": 4", StringComparison.Ordinal))
+                                {
+                                    var title = System.Text.RegularExpressions.Regex.Match(ex.Message, "\"title\":\"([^\"]+)\"").Groups[1].Value;
+                                    state.Detail = $"Отказ, как и ожидалось: {title}";
+                                }
+                                break;
+                            }
+                            var result = await SendAsync(client, step["method"]!.ToString(), path, args, ct);
+                            if (result?["id"] is { } id && step["outputVar"] is { } outVar) vars[outVar.ToString()] = id.ToString();
+                            state.Detail = Summarize(result);
+                            break;
+                        }
+                        case "transition":
+                        {
+                            var (client, userId) = await ClientAsync(step["login"]!.ToString(), ct);
+                            var path = await ResolvePathAsync(step["path"]!.ToString(), userId, vars, ct);
+                            var result = await SendAsync(client, "POST", path, new JsonObject(), ct);
+                            state.Detail = Summarize(result);
+                            break;
+                        }
+                        case "advance_time":
+                        {
+                            var minutes = step["minutes"]?.GetValue<int>() ?? 0;
+                            clock.Advance(TimeSpan.FromMinutes(minutes));
+                            await jobs.RunAllAsync(true, ct);
+                            state.Detail = $"Часы сдвинуты на {minutes} мин";
+                            break;
+                        }
+                        case "expect":
+                        {
+                            var type = step["event"]!.ToString();
+                            state.Detail = await WaitEventAsync(type, since, ct) ?? throw new InvalidOperationException($"Событие {type} не получено");
+                            break;
+                        }
+                    }
+                    state.Status = "done";
+                }
+                catch (Exception ex)
+                {
+                    state.Status = "failed";
+                    state.Detail = ex.Message;
+                    log.LogWarning(ex, "Demo step {Step} failed", state.Id);
+                }
+            }
+        }
+        finally
+        {
+            Running = false;
+        }
+    }
+
+    private async Task<string?> WaitEventAsync(string type, DateTimeOffset since, CancellationToken ct)
+    {
+        for (var attempt = 0; attempt < 16; attempt++)
+        {
+            using var scope = scopes.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var ev = await db.OutboxEvents.AsNoTracking().Where(x => x.Type == type && x.OccurredAt >= since).OrderByDescending(x => x.OccurredAt).FirstOrDefaultAsync(ct);
+            if (ev is not null)
+            {
+                var text = await db.Notifications.AsNoTracking().Where(n => n.EventId == ev.Id).Select(n => n.Body).FirstOrDefaultAsync(ct);
+                return text ?? $"{ev.Type}: {ev.Payload}";
+            }
+            await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+        }
+        return null;
+    }
+
+    private async Task<(HttpClient Client, Guid UserId)> ClientAsync(string login, CancellationToken ct)
+    {
+        using var scope = scopes.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var user = await db.Users.AsNoTracking().FirstAsync(x => x.Login == login, ct);
+        var client = httpFactory.CreateClient("self");
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", tokens.Issue(user).Token);
+        return (client, user.Id);
+    }
+
+    private static async Task<JsonNode?> SendAsync(HttpClient client, string method, string path, JsonObject args, CancellationToken ct)
+    {
+        HttpResponseMessage response;
+        if (method == "GET")
+        {
+            var query = string.Join("&", args.Select(kv => $"{Uri.EscapeDataString(kv.Key)}={Uri.EscapeDataString(kv.Value?.ToString() ?? "")}"));
+            response = await client.GetAsync(query.Length > 0 ? $"{path}?{query}" : path, ct);
+        }
+        else
+        {
+            var request = new HttpRequestMessage(new HttpMethod(method), path) { Content = JsonContent.Create(args) };
+            request.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+            response = await client.SendAsync(request, ct);
+        }
+        var text = await response.Content.ReadAsStringAsync(ct);
+        if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"{method} {path}: {(int)response.StatusCode} {text}");
+        return text.Length == 0 ? null : JsonNode.Parse(text);
+    }
+
+    private static string Summarize(JsonNode? node)
+    {
+        if (node is not JsonObject obj) return "OK";
+        return string.Join(", ", obj.Where(kv => kv.Value is JsonValue && kv.Key != "id").Take(4).Select(kv => $"{kv.Key}: {kv.Value}"));
+    }
+
+    private async Task<string> ResolvePathAsync(string template, Guid userId, Dictionary<string, string> vars, CancellationToken ct)
+    {
+        var path = template;
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(template, @"\{(\w+)\}"))
+        {
+            var name = m.Groups[1].Value;
+            if (!vars.TryGetValue(name, out var value))
+            {
+                // {requestId} может ссылаться на переменную maintenanceRequestId (имя сущности длиннее параметра).
+                value = vars.FirstOrDefault(kv => kv.Key.EndsWith(name, StringComparison.OrdinalIgnoreCase)
+                                                  || kv.Key.EndsWith(char.ToUpperInvariant(name[0]) + name[1..], StringComparison.Ordinal)).Value;
+            }
+            if (value is null)
+            {
+                value = (await ResolveParamAsync(name, userId, ct))?.ToString() ?? throw new InvalidOperationException($"Не найдено значение параметра {name}");
+                vars[name] = value;
+            }
+            path = path.Replace(m.Value, value, StringComparison.Ordinal);
+        }
+        return path;
+    }
+
+    /// <summary>Заменяет условные значения аргументов демо-шага реальными: id записей, пользователей, координаты объекта.</summary>
+    private async Task ResolveArgsAsync(JsonObject args, JsonObject? resolve, Guid userId, Dictionary<string, string> vars, CancellationToken ct)
+    {
+        if (resolve is null) return;
+        foreach (var (key, spec) in resolve)
+        {
+            var kind = spec?["kind"]?.ToString();
+            switch (kind)
+            {
+                case "entity":
+                {
+                    var name = spec!["var"]!.ToString();
+                    if (!vars.TryGetValue(name, out var id))
+                    {
+                        id = (await ResolveParamAsync(name, userId, ct))?.ToString() ?? "";
+                        if (id.Length > 0) vars[name] = id;
+                    }
+                    if (id.Length > 0) args[key] = id;
+                    break;
+                }
+                case "user":
+                {
+                    using var scope = scopes.CreateScope();
+                    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    var login = spec!["login"]!.ToString();
+                    var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Login == login, ct);
+                    if (user is not null) args[key] = user.Id.ToString();
+                    break;
+                }
+                case "time":
+                {
+                    var offset = spec!["offsetMinutes"]!.GetValue<int>();
+                    args[key] = _timeBase.AddMinutes(offset).ToString("O");
+                    break;
+                }
+                case "geo":
+                {
+                    if (!vars.TryGetValue(spec!["var"]!.ToString(), out var id) || !Guid.TryParse(id, out var gid)) break;
+                    using var scope = scopes.CreateScope();
+                    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    await db.Database.OpenConnectionAsync(ct);
+                    try
+                    {
+                        await using var cmd = new Npgsql.NpgsqlCommand(spec["sql"]!.ToString(), (Npgsql.NpgsqlConnection)db.Database.GetDbConnection());
+                        cmd.Parameters.AddWithValue("id", gid);
+                        await using var reader = await cmd.ExecuteReaderAsync(ct);
+                        if (await reader.ReadAsync(ct) && !reader.IsDBNull(0))
+                            args[key] = spec["coord"]!.ToString() == "lat" ? reader.GetDouble(0) : reader.GetDouble(1);
+                    }
+                    finally
+                    {
+                        await db.Database.CloseConnectionAsync();
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    /// <summary>Значение параметра пути: первая запись сущности, принадлежащая пользователю (или любая).</summary>
+    private async Task<Guid?> ResolveParamAsync(string name, Guid userId, CancellationToken ct)
+    {
+        using var scope = scopes.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        switch (name)
+        {
+{% for e in spec.entities %}
+{% for alias in id_aliases(e) %}
+            case "{{alias}}":
+{% endfor %}
+{% if e.owner_field %}
+                return await db.{{plural(e.name)}}.AsNoTracking().Where(x => x.{{pascal(e.owner_field)}} == userId).OrderBy(x => x.CreatedAt).Select(x => (Guid?)x.Id).FirstOrDefaultAsync(ct)
+                    ?? await db.{{plural(e.name)}}.AsNoTracking().OrderBy(x => x.CreatedAt).Select(x => (Guid?)x.Id).FirstOrDefaultAsync(ct);
+{% else %}
+                return await db.{{plural(e.name)}}.AsNoTracking().OrderBy(x => x.CreatedAt).Select(x => (Guid?)x.Id).FirstOrDefaultAsync(ct);
+{% endif %}
+{% endfor %}
+            default:
+                return null;
+        }
+    }
+}

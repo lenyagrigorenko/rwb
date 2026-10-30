@@ -1,0 +1,25 @@
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning",
+      "Microsoft.EntityFrameworkCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*",
+  "ConnectionStrings": {
+    "Default": "Host=localhost;Port=5432;Database={{db_name}};Username={{db_name}}"
+  },
+  "Kafka": {
+    "BootstrapServers": ""
+  },
+  "Integrations": {
+    "BaseUrl": "http://localhost:8081/"
+  },
+  "Cors": {
+    "Origins": "http://localhost:4200,http://localhost:8088"
+  },
+  "Seed": {
+    "DataDir": "../../seed-data"
+  }
+}

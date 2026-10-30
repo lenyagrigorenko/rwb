@@ -1,0 +1,21 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}. Типизированные модели API для дальнейшей разработки.
+/* eslint-disable */
+
+export interface GeoJsonGeometry {
+  type: string;
+  coordinates: unknown;
+}
+{% for e in spec.entities %}
+
+/** {{e.title}} */
+export interface {{e.name}} {
+  id: string;
+{% for f in e.fields %}
+  /** {{f.title}} */
+  {{f.name}}{{ '' if f.required else '?' }}: {{ts_type(f)}}{{ '' if f.required else ' | null' }};
+{% endfor %}
+  labels: Record<string, string | null>;
+  createdAt: string;
+  updatedAt: string;
+}
+{% endfor %}

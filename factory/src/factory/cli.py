@@ -1,0 +1,38 @@
+"""Command line entry point: `factory run <case_dir>`."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="factory", description="Агентский конвейер: требования → приложение")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    run = sub.add_parser("run", help="Прогнать конвейер для кейса (каталог с requirements.md и data/)")
+    run.add_argument("case", type=Path)
+    run.add_argument("--out", type=Path, default=ROOT / "out")
+    run.add_argument("--runs", type=Path, default=ROOT / "runs")
+    run.add_argument("--skip-verify", action="store_true")
+    serve = sub.add_parser("serve", help="Веб-интерфейс конвейера")
+    serve.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
+    args = parser.parse_args()
+
+    if args.cmd == "run":
+        from .pipeline import Pipeline
+        p = Pipeline(args.case.resolve(), args.out.resolve(), args.runs.resolve(), skip_verify=args.skip_verify)
+        state = asyncio.run(p.run())
+        print(json.dumps({"status": state.status, "project": state.result.get("project_dir"),
+                          "metrics": {k: v for k, v in state.metrics.items() if k != "by_stage"}}, ensure_ascii=False, indent=1))
+    elif args.cmd == "serve":
+        import uvicorn
+        uvicorn.run("factory.server:app", host="0.0.0.0", port=args.port)
+
+
+if __name__ == "__main__":
+    main()

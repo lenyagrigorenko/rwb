@@ -1,0 +1,25 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}
+namespace {{N}}.Application.Integrations;
+
+/// <summary>Внешние интеграции, заменяемые адаптерами.</summary>
+public static class IntegrationCatalog
+{
+    public static readonly string[] Names = [{% for i in spec.integrations %}"{{i.name}}"{% if not loop.last %}, {% endif %}{% endfor %}];
+}
+{% for i in spec.integrations %}
+{% for m in i.methods %}
+
+public sealed record {{i.name}}{{m.name}}Request({% for f in m.input %}{{payload_type(f)}} {{pascal(f.name)}}{% if not loop.last %}, {% endif %}{% endfor %});
+
+public sealed record {{i.name}}{{m.name}}Response({% for f in m.output %}{{payload_type(f)}} {{pascal(f.name)}}{% if not loop.last %}, {% endif %}{% endfor %});
+{% endfor %}
+
+/// <summary>{{i.title}}. {{i.description}} Заменяет: {{i.real_system}}. Реализация — адаптер в Infrastructure.</summary>
+public interface I{{i.name}}
+{
+{% for m in i.methods %}
+    /// <summary>{{m.description}}</summary>
+    Task<{{i.name}}{{m.name}}Response> {{m.name}}Async({{i.name}}{{m.name}}Request request, CancellationToken ct);
+{% endfor %}
+}
+{% endfor %}

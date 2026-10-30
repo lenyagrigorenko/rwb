@@ -1,0 +1,118 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}
+using Microsoft.EntityFrameworkCore;
+using {{N}}.Application.Abstractions;
+using {{N}}.Domain.Entities;
+
+namespace {{N}}.Infrastructure.Persistence;
+
+/// <summary>EF Core контекст. Схема создаётся SQL-миграциями (Persistence/Migrations), маппинг совпадает с ними.</summary>
+public sealed class AppDbContext(DbContextOptions<AppDbContext> options, TimeProvider clock) : DbContext(options), IAppDbContext
+{
+    /// <summary>Проставляет CreatedAt/UpdatedAt, если их не задал вызывающий код.</summary>
+    public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+    {
+        var now = clock.GetUtcNow();
+        foreach (var entry in ChangeTracker.Entries<EntityBase>())
+        {
+            if (entry.State == Microsoft.EntityFrameworkCore.EntityState.Added)
+            {
+                if (entry.Entity.CreatedAt == default) entry.Entity.CreatedAt = now;
+                if (entry.Entity.UpdatedAt == default) entry.Entity.UpdatedAt = now;
+            }
+            else if (entry.State == Microsoft.EntityFrameworkCore.EntityState.Modified)
+            {
+                entry.Entity.UpdatedAt = now;
+            }
+        }
+        return base.SaveChangesAsync(cancellationToken);
+    }
+
+{% for e in spec.entities %}
+    public DbSet<{{e.name}}> {{plural(e.name)}} => Set<{{e.name}}>();
+{% endfor %}
+    public DbSet<AppUser> Users => Set<AppUser>();
+    public DbSet<OutboxEvent> OutboxEvents => Set<OutboxEvent>();
+    public DbSet<ConsumedEvent> ConsumedEvents => Set<ConsumedEvent>();
+    public DbSet<AppNotification> Notifications => Set<AppNotification>();
+    public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
+
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+{% for e in spec.entities %}
+        b.Entity<{{e.name}}>(e =>
+        {
+            e.ToTable("{{table(e)}}");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.CreatedAt).HasColumnName("created_at");
+            e.Property(x => x.UpdatedAt).HasColumnName("updated_at");
+{% for f in e.fields %}
+            e.Property(x => x.{{pascal(f.name)}}).HasColumnName("{{column(f)}}"){{ef_extra(f)}};
+{% endfor %}
+{% for nav, target, f in navigations(e) %}
+            e.HasOne(x => x.{{nav}}).WithMany().HasForeignKey(x => x.{{pascal(f.name)}}).OnDelete({{ 'DeleteBehavior.Restrict' if f.required else 'DeleteBehavior.SetNull' }});
+{% endfor %}
+        });
+{% endfor %}
+        b.Entity<AppUser>(e =>
+        {
+            e.ToTable("app_users");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.Login).HasColumnName("login");
+            e.Property(x => x.DisplayName).HasColumnName("display_name");
+            e.Property(x => x.Role).HasColumnName("role");
+            e.Property(x => x.PasswordHash).HasColumnName("password_hash");
+            e.Property(x => x.CreatedAt).HasColumnName("created_at");
+        });
+        b.Entity<OutboxEvent>(e =>
+        {
+            e.ToTable("outbox_events");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.Type).HasColumnName("type");
+            e.Property(x => x.Version).HasColumnName("version");
+            e.Property(x => x.Topic).HasColumnName("topic");
+            e.Property(x => x.Key).HasColumnName("key");
+            e.Property(x => x.EntityId).HasColumnName("entity_id");
+            e.Property(x => x.Payload).HasColumnName("payload").HasColumnType("jsonb");
+            e.Property(x => x.OccurredAt).HasColumnName("occurred_at");
+            e.Property(x => x.PublishedAt).HasColumnName("published_at");
+            e.Property(x => x.Attempts).HasColumnName("attempts");
+        });
+        b.Entity<ConsumedEvent>(e =>
+        {
+            e.ToTable("consumed_events");
+            e.HasKey(x => x.EventId);
+            e.Property(x => x.EventId).HasColumnName("event_id");
+            e.Property(x => x.Type).HasColumnName("type");
+            e.Property(x => x.Topic).HasColumnName("topic");
+            e.Property(x => x.Partition).HasColumnName("partition");
+            e.Property(x => x.Offset).HasColumnName("offset");
+            e.Property(x => x.Payload).HasColumnName("payload").HasColumnType("jsonb");
+            e.Property(x => x.ConsumedAt).HasColumnName("consumed_at");
+        });
+        b.Entity<AppNotification>(e =>
+        {
+            e.ToTable("notifications");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.UserId).HasColumnName("user_id");
+            e.Property(x => x.Title).HasColumnName("title");
+            e.Property(x => x.Body).HasColumnName("body");
+            e.Property(x => x.EventType).HasColumnName("event_type");
+            e.Property(x => x.EventId).HasColumnName("event_id");
+            e.Property(x => x.CreatedAt).HasColumnName("created_at");
+            e.Property(x => x.ReadAt).HasColumnName("read_at");
+        });
+        b.Entity<IdempotencyRecord>(e =>
+        {
+            e.ToTable("idempotency_keys");
+            e.HasKey(x => x.Key);
+            e.Property(x => x.Key).HasColumnName("key");
+            e.Property(x => x.StatusCode).HasColumnName("status_code");
+            e.Property(x => x.Body).HasColumnName("body");
+            e.Property(x => x.CreatedAt).HasColumnName("created_at");
+        });
+    }
+}

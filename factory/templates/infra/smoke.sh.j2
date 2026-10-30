@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Смоук-проверка развёрнутого прототипа: готовность, вход, списки сущностей, OpenAPI.
+set -euo pipefail
+API="${API_URL:-http://localhost:8080}"
+PASS="${DEMO_PASSWORD:-Demo2026!}"
+fail() { echo "FAIL: $*"; exit 1; }
+
+curl -fsS "$API/health/ready" > /dev/null || fail "health/ready"
+echo "OK  health/ready"
+TOKEN=$(curl -fsS -X POST "$API/api/v1/auth/login" -H 'Content-Type: application/json' \
+  -d "{\"login\":\"{{ admin_login }}\",\"password\":\"$PASS\"}" | sed -E 's/.*"token":"([^"]+)".*/\1/') || fail "login"
+echo "OK  login {{ admin_login }}"
+{% for e in spec.entities %}
+curl -fsS -H "Authorization: Bearer $TOKEN" "$API/api/v1/{{route(e)}}?pageSize=1" > /dev/null || fail "{{route(e)}}"
+echo "OK  GET /api/v1/{{route(e)}}"
+{% endfor %}
+curl -fsS "$API/openapi/v1.json" > /dev/null || fail "openapi"
+echo "OK  openapi"
+echo "Смоук-проверка пройдена"

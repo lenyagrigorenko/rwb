@@ -1,0 +1,277 @@
+# Документ системного анализа: {{spec.product_name}}
+
+> Сформирован агентским конвейером из бизнес-требований. Модель приложения (IR) — `spec.yaml`; код, API, модель данных
+> и этот документ сгенерированы из неё и описывают одно и то же поведение.
+
+| Параметр | Значение |
+|---|---|
+| Проект | `{{spec.slug}}` |
+| Версия документа | 1.0 |
+| Источник требований | `docs/pipeline/` (исходный текст, профиль данных, анализ) |
+| Статус | Прототип для проверки гипотезы |
+
+## 1. Назначение системы
+
+{{a.summary}}
+
+**Цели продукта:**
+{% for g in a.goals %}
+- {{g}}
+{% endfor %}
+
+## 2. Границы решения
+
+**Входит в решение:**
+{% for s in a.scope_in %}
+- {{s}}
+{% endfor %}
+
+**Не входит в решение:**
+{% for s in a.scope_out %}
+- {{s}}
+{% endfor %}
+
+**Ограничения:**
+{% for c in a.constraints %}
+- {{c}}
+{% endfor %}
+
+## 3. Роли и права доступа
+
+| Роль | Код | Описание | Демо-логин |
+|---|---|---|---|
+{% for r in spec.roles %}
+| {{r.title}} | `{{r.name}}` | {{r.description}} | `{{r.demo_login}}` |
+{% endfor %}
+
+**Матрица прав** (read — все записи, read_own — только свои, по полю-владельцу):
+
+| Сущность | {% for r in spec.roles %}{{r.title}} | {% endfor %}
+
+|---|{% for r in spec.roles %}---|{% endfor %}
+
+{% for e in spec.entities %}
+| {{e.title_plural}} | {% for r in spec.roles %}{{ spec.actions(r.name, e.name) | join(', ') or '—' }} | {% endfor %}
+
+{% endfor %}
+{% for e in spec.entities %}{% if e.lifecycle %}
+
+Переходы «{{e.title}}»: {% for t in e.lifecycle.transitions %}«{{t.title}}» ({{ t.from_states | join(', ') }} → {{t.to}}; роли: {{ t.roles | join(', ') }}){% if not loop.last %}; {% endif %}{% endfor %}.
+{% endif %}{% endfor %}
+
+## 4. Пользовательские сценарии
+
+{% for sc in a.scenarios %}
+### {{sc.id}}. {{sc.title}}
+
+Действующее лицо: {{sc.actor}}.
+
+{% for st in sc.steps %}
+{{loop.index}}. {{st}}
+{% endfor %}
+{% if sc.alternatives %}
+
+Альтернативные сценарии:
+{% for alt in sc.alternatives %}
+- {{alt}}
+{% endfor %}
+{% endif %}
+
+{% endfor %}
+## 5. Функциональные требования
+
+| ID | Требование | Приоритет | Источник | Реализация |
+|---|---|---|---|---|
+{% for fr in a.functional %}
+| {{fr.id}} | {{fr.text}} | {{fr.priority}} | {{ 'заказчик' if fr.source == 'customer' else 'допущение' }} | {{ (coverage.get(fr.id) or ['—']) | join('; ') }} |
+{% endfor %}
+
+## 6. Нефункциональные требования
+
+| ID | Требование | Источник |
+|---|---|---|
+{% for fr in a.non_functional %}
+| {{fr.id}} | {{fr.text}} | {{ 'заказчик' if fr.source == 'customer' else 'допущение' }} |
+{% endfor %}
+
+## 7. Описание компонентов
+
+| Компонент | Технологии | Ответственность |
+|---|---|---|
+| Backend API | C# 14, ASP.NET Core (.NET 10), EF Core 10 | REST API `/api/v1`, бизнес-логика, права, валидация, фоновые задачи |
+| База данных | PostgreSQL 17 + PostGIS | Хранение данных, геопоиск (GIST-индексы по geography) |
+| Web-интерфейс | Angular 20.1, Angular Material | Административный интерфейс ролей {{ admin_roles | join(', ') }} |
+{% if spec.has_mobile %}
+| Мобильное приложение | Kotlin 2.2, Jetpack Compose, Material 3 | Экраны: {% for s in spec.screens if s.platform == 'mobile' %}{{s.title}}{% if not loop.last %}, {% endif %}{% endfor %} |
+{% endif %}
+{% if spec.events %}
+| Шина событий | Apache Kafka (KRaft) | Доменные события через outbox, топики: {{ spec.events | map(attribute='topic') | unique | join(', ') }} |
+{% endif %}
+{% if spec.integrations %}
+| Mock-сервис интеграций | ASP.NET Core minimal API | Заменяет: {{ spec.integrations | map(attribute='real_system') | join(', ') }} |
+{% endif %}
+
+## 8. Модель данных
+
+```mermaid
+erDiagram
+{% for e in spec.entities %}
+    {{e.name}} {
+        uuid id PK
+{% for f in e.fields %}
+        {{ f.type }} {{f.name}}{% if f.type == 'ref' %} FK{% endif %}
+
+{% endfor %}
+    }
+{% endfor %}
+{% for e in spec.entities %}{% for f in e.fields %}{% if f.type == 'ref' and f.ref != 'User' %}
+    {{f.ref}} ||--o{ {{e.name}} : "{{f.title}}"
+{% endif %}{% endfor %}{% endfor %}
+```
+
+{% for e in spec.entities %}
+### {{e.title}} (`{{e.name}}`, таблица `{{table(e)}}`)
+
+{{e.description}}
+
+| Поле | Тип | Обязательное | Ограничения | Описание |
+|---|---|---|---|---|
+| id | uuid | да | первичный ключ | Идентификатор |
+{% for f in e.fields %}
+| `{{f.name}}` | {{f.type}}{% if f.ref %} → {{f.ref}}{% endif %} | {{ 'да' if f.required else 'нет' }} | {{ constraints(f) }} | {{f.title}}{% if f.description %}. {{f.description}}{% endif %}{% if f.readonly %} (заполняется системой){% endif %} |
+{% endfor %}
+
+{% endfor %}
+{% if spec.datasets %}
+**Импорт приложенных данных:**
+
+{% for d in spec.datasets %}
+- `{{d.file}}` → {{d.entity}} (записи `{{d.records_path}}`, геометрия: {{d.geometry_format}}). Сопоставление: {% for k, v in d.mapping.items() %}`{{k}}` ← `{{v}}`{% if not loop.last %}, {% endif %}{% endfor %}.
+{% endfor %}
+{% endif %}
+
+## 9. API-контракты
+
+Базовый путь `/api/v1`, формат JSON, аутентификация `Authorization: Bearer <JWT>` (получить: `POST /api/v1/auth/login`).
+Полная спецификация OpenAPI: `GET /openapi/v1.json` (интерактивно: `/scalar`), копия — `docs/api/openapi.json`.
+
+**CRUD сущностей** (для каждой: `GET` список с `page`, `pageSize`, `sort`, `dir`, `q` и фильтрами; `GET /{id}`; `POST`; `PUT /{id}`; `DELETE /{id}`):
+
+| Сущность | Путь | Фильтры |
+|---|---|---|
+{% for e in spec.entities %}
+| {{e.title_plural}} | `/api/v1/{{route(e)}}` | {{ e.fields | selectattr('type', 'in', ['enum', 'ref', 'bool']) | map(attribute='name') | join(', ') or '—' }} |
+{% endfor %}
+
+**Бизнес-операции:**
+
+{% for op in spec.operations %}
+#### {{op.id}} `{{op.method}} /api/v1{{op.path}}` — {{op.title}}
+
+{{op.description}}
+
+- Роли: {{ op.roles | join(', ') }}. Покрывает: {{ op.covers | join(', ') }}.{% if op.idempotent %} Идемпотентна (заголовок `Idempotency-Key`).{% endif %}
+
+{% if op.input %}
+- Запрос: {% for f in op.input %}`{{f.name}}` ({{f.type}}{% if f.required %}, обязательное{% endif %}{% if constraints(f) != '—' %}, {{constraints(f)}}{% endif %}){% if not loop.last %}, {% endif %}{% endfor %}.
+{% endif %}
+- Ответ: {% if op.output_entity %}{{ 'список ' if op.output_list }}{{op.output_entity}}{% else %}{% for f in op.output %}`{{f.name}}` ({{f.type}}){% if not loop.last %}, {% endif %}{% endfor %}{% endif %}.
+{% if op.emits %}
+- События: {{ op.emits | join(', ') }}.
+{% endif %}
+
+{% endfor %}
+## 10. События и интеграции
+
+{% if spec.events %}
+События публикуются через transactional outbox (таблица `outbox_events`) в Kafka. Конверт сообщения:
+`{id, type, version, occurredAt, payload}`; ключ партиционирования — `key_field`. Повторная доставка допустима
+(at-least-once), консьюмер обрабатывает идемпотентно по `id` (таблица `consumed_events`). Схема — `docs/asyncapi.yaml`.
+
+| Событие | Версия | Топик | Ключ | Поля | Уведомление |
+|---|---|---|---|---|---|
+{% for ev in spec.events %}
+| {{ev.name}} — {{ev.title}} | {{ev.version}} | `{{ev.topic}}` | `{{ev.key_field}}` | {{ ev.payload | map(attribute='name') | join(', ') }} | {{ ev.notify or '—' }} |
+{% endfor %}
+{% endif %}
+
+{% if spec.jobs %}
+**Фоновые задачи:**
+
+{% for j in spec.jobs %}
+- `{{j.name}}` (каждые {{j.interval_seconds}} с) — {{j.description}}
+{% endfor %}
+{% endif %}
+
+{% for i in spec.integrations %}
+**Интеграция «{{i.title}}»** (заменяет: {{i.real_system}}). {{i.description}} Реализована интерфейсом `I{{i.name}}` и
+HTTP-адаптером; в прототипе адаптер обращается к mock-сервису `mocks`. Замена поставщика — новая реализация интерфейса
+без изменения бизнес-логики.
+
+{% for m in i.methods %}
+- `{{m.name}}`: {{m.description}}. Вход: {{ m.input | map(attribute='name') | join(', ') or '—' }}; выход: {{ m.output | map(attribute='name') | join(', ') or '—' }}.
+{% endfor %}
+
+{% endfor %}
+## 11. Ограничения и проверки входных данных
+
+| Сущность / операция | Поле | Проверка |
+|---|---|---|
+{% for e in spec.entities %}{% for f in e.fields %}{% if constraints(f) != '—' or f.required %}
+| {{e.title}} | `{{f.name}}` | {{ 'обязательное; ' if f.required }}{{ constraints(f) }} |
+{% endif %}{% endfor %}{% endfor %}
+{% for op in spec.operations %}{% for f in op.input %}
+| {{op.name}} | `{{f.name}}` | {{ 'обязательное; ' if f.required }}{{ constraints(f) }} |
+{% endfor %}{% endfor %}
+
+Проверки выполняются на трёх уровнях: форма web-интерфейса, атрибуты валидации API (ответ 400 с полем `errors`),
+ограничения БД (NOT NULL, UNIQUE, CHECK, внешние ключи).
+
+## 12. Обработка ошибок
+
+Все ошибки возвращаются в формате `application/problem+json` (RFC 9457):
+
+```json
+{ "type": "https://httpstatuses.io/400", "title": "Ошибка валидации", "status": 400,
+  "code": "validation", "traceId": "…", "errors": { "plateNumber": ["Поле имеет неверный формат"] } }
+```
+
+| HTTP | code | Когда |
+|---|---|---|
+| 400 | validation, bad_request | Нарушены проверки входных данных |
+| 401 | unauthorized, invalid_credentials | Нет или недействителен токен, неверный пароль |
+| 403 | forbidden | Роль не имеет права на действие или запись |
+| 404 | not_found | Запись не найдена или недоступна роли |
+| 409 | conflict | Нарушена уникальность или связи данных |
+| 422 | business_rule | Операция недопустима в текущем состоянии |
+| 429 | — | Превышен лимит запросов (1200/мин на пользователя, 30/мин на вход) |
+| 502 | integration_unavailable | Недоступна внешняя система (mock-сервис) |
+| 500 | internal_error | Непредвиденная ошибка (подробности — в логе по traceId) |
+
+## 13. Критерии приёмки
+
+| ID | ФТ | Дано | Когда | Тогда | Уровень проверки |
+|---|---|---|---|---|---|
+{% for ac in a.acceptance %}
+| {{ac.id}} | {{ac.fr}} | {{ac.given}} | {{ac.when}} | {{ac.then}} | {{ac.test_level}} |
+{% endfor %}
+
+## 14. Допущения и открытые вопросы
+
+**Допущения системы** (не являются требованиями заказчика):
+{% for x in a.assumptions %}
+- {{x}}
+{% endfor %}
+
+**Неоднозначности и принятые решения:**
+
+| ID | Вопрос | Влияние | Затрагивает | Принятое решение | Обоснование |
+|---|---|---|---|---|---|
+{% for q in a.ambiguities %}
+| {{q.id}} | {{q.question}} | {{q.impact}} | {{ q.affects | join(', ') }} | {{ q.answer or q.default_answer }} | {{q.rationale}} |
+{% endfor %}
+
+**Риски:**
+{% for r in a.risks %}
+- {{r}}
+{% endfor %}

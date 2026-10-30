@@ -1,0 +1,59 @@
+asyncapi: 3.0.0
+info:
+  title: {{spec.product_name}} — события
+  version: 1.0.0
+  description: Доменные события, публикуемые через transactional outbox. Конверт {id, type, version, occurredAt, payload}.
+servers:
+  local:
+    host: kafka:9092
+    protocol: kafka
+channels:
+{% for topic in topics %}
+  {{topic}}:
+    address: {{topic}}
+    messages:
+{% for ev in spec.events if ev.topic == topic %}
+      {{ev.name}}:
+        $ref: '#/components/messages/{{ev.name}}'
+{% endfor %}
+{% endfor %}
+operations:
+{% for ev in spec.events %}
+  publish{{ev.name}}:
+    action: send
+    channel:
+      $ref: '#/channels/{{ev.topic}}'
+    messages:
+      - $ref: '#/channels/{{ev.topic}}/messages/{{ev.name}}'
+{% endfor %}
+components:
+  messages:
+{% for ev in spec.events %}
+    {{ev.name}}:
+      name: {{ev.name}}
+      title: {{ev.title}}
+      summary: {{ (ev.description or ev.title) | tojson }}
+      headers:
+        type: object
+        properties:
+          event-id: {type: string, format: uuid}
+          event-type: {type: string, const: {{ev.name}}}
+          event-version: {type: string, const: "{{ev.version}}"}
+      bindings:
+        kafka:
+          key: {type: string, description: "{{ev.key_field}}"}
+      payload:
+        type: object
+        required: [id, type, version, occurredAt, payload]
+        properties:
+          id: {type: string, format: uuid}
+          type: {type: string, const: {{ev.name}}}
+          version: {type: integer, const: {{ev.version}}}
+          occurredAt: {type: string, format: date-time}
+          payload:
+            type: object
+            properties:
+{% for p in ev.payload %}
+              {{p.name}}: {type: {{ json_type(p) }}, description: {{ p.title | tojson }}}
+{% endfor %}
+{% endfor %}

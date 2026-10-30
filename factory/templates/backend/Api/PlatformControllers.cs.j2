@@ -1,0 +1,198 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}
+using System.Text.Json;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.EntityFrameworkCore;
+using {{N}}.Api.Demo;
+using {{N}}.Api.Infrastructure;
+using {{N}}.Application.Abstractions;
+using {{N}}.Application.Common;
+using {{N}}.Domain.Entities;
+using {{N}}.Infrastructure;
+
+namespace {{N}}.Api.Controllers;
+
+public sealed record LoginRequest(string Login, string Password);
+
+public sealed record UserDto(Guid Id, string Login, string DisplayName, string Role);
+
+public sealed record LoginResponse(string Token, DateTimeOffset ExpiresAt, UserDto User);
+
+public sealed record DemoUserDto(string Login, string Role, string DisplayName);
+
+/// <summary>Аутентификация.</summary>
+[ApiController]
+[Route("api/v1/auth")]
+[Tags("Аутентификация")]
+public sealed class AuthController(IAppDbContext db, JwtTokenService tokens, IPasswordHasher<AppUser> hasher, ICurrentUser current) : ControllerBase
+{
+    /// <summary>Вход по логину и паролю, возвращает JWT.</summary>
+    [HttpPost("login")]
+    [AllowAnonymous]
+    [EnableRateLimiting("login")]
+    public async Task<LoginResponse> Login(LoginRequest request, CancellationToken ct)
+    {
+        var user = await db.Users.FirstOrDefaultAsync(x => x.Login == request.Login, ct);
+        if (user is null || hasher.VerifyHashedPassword(user, user.PasswordHash, request.Password) == PasswordVerificationResult.Failed)
+            throw new AppException("Неверный логин или пароль", 401, "invalid_credentials");
+        var (token, expires) = tokens.Issue(user);
+        return new LoginResponse(token, expires, new UserDto(user.Id, user.Login, user.DisplayName, user.Role));
+    }
+
+    /// <summary>Текущий пользователь.</summary>
+    [HttpGet("me")]
+    [Authorize]
+    public async Task<UserDto> Me(CancellationToken ct)
+    {
+        var id = current.RequireUserId();
+        var user = await db.Users.FirstOrDefaultAsync(x => x.Id == id, ct) ?? throw new NotFoundException("Пользователь не найден");
+        return new UserDto(user.Id, user.Login, user.DisplayName, user.Role);
+    }
+
+    /// <summary>Демо-учётные записи (логины и роли, без паролей) для экрана входа.</summary>
+    [HttpGet("demo-users")]
+    [AllowAnonymous]
+    public async Task<IReadOnlyList<DemoUserDto>> DemoUsers(CancellationToken ct) =>
+        await db.Users.OrderBy(x => x.Login).Select(x => new DemoUserDto(x.Login, x.Role, x.DisplayName)).ToListAsync(ct);
+}
+
+/// <summary>Пользователи (для выбора в формах).</summary>
+[ApiController]
+[Authorize(Roles = "{{ admin_roles | join(',') }}")]
+[Route("api/v1/users")]
+[Tags("Пользователи")]
+public sealed class UsersController(IAppDbContext db) : ControllerBase
+{
+    [HttpGet]
+    public async Task<IReadOnlyList<UserDto>> List([FromQuery] string? role, CancellationToken ct) =>
+        await db.Users.AsNoTracking().Where(x => role == null || x.Role == role).OrderBy(x => x.DisplayName)
+            .Select(x => new UserDto(x.Id, x.Login, x.DisplayName, x.Role)).ToListAsync(ct);
+}
+
+public sealed record NotificationDto(Guid Id, string Title, string Body, string EventType, DateTimeOffset CreatedAt, DateTimeOffset? ReadAt);
+
+/// <summary>Уведомления текущего пользователя.</summary>
+[ApiController]
+[Authorize]
+[Route("api/v1/me/notifications")]
+[Tags("Уведомления")]
+public sealed class NotificationsController(IAppDbContext db, ICurrentUser current, TimeProvider clock) : ControllerBase
+{
+    /// <summary>Последние уведомления (since — только новее указанного момента).</summary>
+    [HttpGet]
+    public async Task<IReadOnlyList<NotificationDto>> List([FromQuery] DateTimeOffset? since, CancellationToken ct)
+    {
+        var id = current.RequireUserId();
+        var q = db.Notifications.AsNoTracking().Where(x => x.UserId == id);
+        if (since is not null) q = q.Where(x => x.CreatedAt > since.Value.ToUniversalTime());
+        return await q.OrderByDescending(x => x.CreatedAt).Take(50)
+            .Select(x => new NotificationDto(x.Id, x.Title, x.Body, x.EventType, x.CreatedAt, x.ReadAt)).ToListAsync(ct);
+    }
+
+    /// <summary>Отметить уведомление прочитанным.</summary>
+    [HttpPost("{id:guid}/read")]
+    public async Task<IActionResult> Read(Guid id, CancellationToken ct)
+    {
+        var uid = current.RequireUserId();
+        var n = await db.Notifications.FirstOrDefaultAsync(x => x.Id == id && x.UserId == uid, ct) ?? throw new NotFoundException("Уведомление не найдено");
+        n.ReadAt = clock.GetUtcNow();
+        await db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+}
+
+public sealed record EventDto(Guid Id, string Type, int Version, string Topic, string? Key, Guid? EntityId, JsonElement Payload, DateTimeOffset OccurredAt, DateTimeOffset? PublishedAt, bool Consumed);
+
+/// <summary>Журнал доменных событий (outbox) и подтверждения обработки из Kafka.</summary>
+[ApiController]
+[Authorize(Roles = "{{ admin_roles | join(',') }}")]
+[Route("api/v1/events")]
+[Tags("События")]
+public sealed class EventsController(IAppDbContext db) : ControllerBase
+{
+    /// <summary>События по убыванию времени; фильтры type и entityId.</summary>
+    [HttpGet]
+    public async Task<PagedResult<EventDto>> List([FromQuery] ListQuery query, [FromQuery] string? type, [FromQuery] Guid? entityId, CancellationToken ct)
+    {
+        var q = db.OutboxEvents.AsNoTracking();
+        if (!string.IsNullOrWhiteSpace(type)) q = q.Where(x => x.Type == type);
+        if (entityId is not null) q = q.Where(x => x.EntityId == entityId);
+        var page = Math.Max(1, query.Page);
+        var size = Math.Clamp(query.PageSize, 1, 200);
+        var total = await q.CountAsync(ct);
+        var rows = await q.OrderByDescending(x => x.OccurredAt).Skip((page - 1) * size).Take(size).ToListAsync(ct);
+        var ids = rows.Select(r => r.Id).ToList();
+        var consumed = await db.ConsumedEvents.AsNoTracking().Where(c => ids.Contains(c.EventId)).Select(c => c.EventId).ToListAsync(ct);
+        var items = rows.Select(r => new EventDto(r.Id, r.Type, r.Version, r.Topic, r.Key, r.EntityId,
+            JsonDocument.Parse(r.Payload).RootElement.Clone(), r.OccurredAt, r.PublishedAt, consumed.Contains(r.Id))).ToList();
+        return new PagedResult<EventDto>(items, total, page, size);
+    }
+}
+
+public sealed record DashboardDto(IReadOnlyDictionary<string, int> Totals, IReadOnlyDictionary<string, IReadOnlyDictionary<string, int>> Statuses, int EventsLastHour, DateTimeOffset Now);
+
+/// <summary>Сводные показатели для главной страницы.</summary>
+[ApiController]
+[Authorize(Roles = "{{ admin_roles | join(',') }}")]
+[Route("api/v1/dashboard")]
+[Tags("Сводка")]
+public sealed class DashboardController(IAppDbContext db, TimeProvider clock) : ControllerBase
+{
+    [HttpGet]
+    public async Task<DashboardDto> Get(CancellationToken ct)
+    {
+        var now = clock.GetUtcNow();
+        var totals = new Dictionary<string, int>
+        {
+{% for e in spec.entities %}
+            ["{{e.name}}"] = await db.{{plural(e.name)}}.CountAsync(ct),
+{% endfor %}
+        };
+        var statuses = new Dictionary<string, IReadOnlyDictionary<string, int>>();
+{% for e in spec.entities %}{% if e.lifecycle %}
+        statuses["{{e.name}}"] = (await db.{{plural(e.name)}}.GroupBy(x => x.{{pascal(e.lifecycle.field)}}).Select(g => new { g.Key, Count = g.Count() }).ToListAsync(ct))
+            .ToDictionary(x => x.Key.ToString(), x => x.Count);
+{% endif %}{% endfor %}
+        var hourAgo = now.AddHours(-1);
+        var events = await db.OutboxEvents.CountAsync(x => x.OccurredAt >= hourAgo, ct);
+        return new DashboardDto(totals, statuses, events, now);
+    }
+}
+
+public sealed record ClockRequest(int Minutes);
+
+/// <summary>Демонстрационный режим: сценарий из требований и управление часами.</summary>
+[ApiController]
+[Authorize(Roles = "{{ admin_roles | join(',') }}")]
+[Route("api/v1/demo")]
+[Tags("Демо-режим")]
+public sealed class DemoController(DemoScenarioRunner runner, DemoTimeProvider clock, JobRunner jobs) : ControllerBase
+{
+    /// <summary>Шаги сценария и их состояние.</summary>
+    [HttpGet]
+    public DemoStatus Get() => runner.Status;
+
+    /// <summary>Запустить сценарий (асинхронно).</summary>
+    [HttpPost("run")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    public IActionResult Run() => runner.Start() ? Accepted(runner.Status) : Conflict(runner.Status);
+
+    /// <summary>Сдвинуть часы приложения вперёд и выполнить фоновые задачи.</summary>
+    [HttpPost("clock")]
+    public async Task<object> Advance(ClockRequest request, CancellationToken ct)
+    {
+        clock.Advance(TimeSpan.FromMinutes(Math.Clamp(request.Minutes, 1, 24 * 60)));
+        await jobs.RunAllAsync(true, ct);
+        return new { now = clock.GetUtcNow(), offsetMinutes = clock.Offset.TotalMinutes };
+    }
+
+    /// <summary>Сбросить сдвиг часов.</summary>
+    [HttpPost("clock/reset")]
+    public object Reset()
+    {
+        clock.Reset();
+        return new { now = clock.GetUtcNow(), offsetMinutes = 0 };
+    }
+}

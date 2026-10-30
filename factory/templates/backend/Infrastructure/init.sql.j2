@@ -1,0 +1,85 @@
+-- V001: начальная схема «{{spec.product_name}}». Сгенерировано из IR, совпадает с docs/05-data-model.md.
+CREATE EXTENSION IF NOT EXISTS postgis;
+
+CREATE TABLE app_users (
+    id uuid PRIMARY KEY,
+    login varchar(64) NOT NULL UNIQUE,
+    display_name varchar(255) NOT NULL,
+    role varchar(64) NOT NULL,
+    password_hash text NOT NULL,
+    created_at timestamptz NOT NULL
+);
+{% for e in spec.entities %}
+
+-- {{e.title}}
+CREATE TABLE {{table(e)}} (
+    id uuid PRIMARY KEY,
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL{% for f in e.fields %},
+    {{column(f)}} {{sql_type(f)}}{% if f.required %} NOT NULL{% endif %}{% if f.unique %} UNIQUE{% endif %}{{sql_check(f)}}{% endfor %}
+
+);
+{% for f in e.fields %}
+COMMENT ON COLUMN {{table(e)}}.{{column(f)}} IS {{sql_string(f.title)}};
+{% endfor %}
+{% endfor %}
+{% for e in spec.entities %}
+{% for f in e.fields %}
+{% if f.type == 'ref' %}
+ALTER TABLE {{table(e)}} ADD CONSTRAINT fk_{{table(e)}}_{{column(f)}} FOREIGN KEY ({{column(f)}}) REFERENCES {{ 'app_users' if f.ref == 'User' else table(f.ref) }}(id) ON DELETE {{ 'RESTRICT' if f.required else 'SET NULL' }};
+CREATE INDEX ix_{{table(e)}}_{{column(f)}} ON {{table(e)}} ({{column(f)}});
+{% elif f.type.startswith('geo') or f.type == 'geometry' %}
+CREATE INDEX ix_{{table(e)}}_{{column(f)}}_geog ON {{table(e)}} USING GIST (({{column(f)}}::geography));
+{% elif f.type == 'enum' or f.type == 'datetime' %}
+CREATE INDEX ix_{{table(e)}}_{{column(f)}} ON {{table(e)}} ({{column(f)}});
+{% endif %}
+{% endfor %}
+CREATE INDEX ix_{{table(e)}}_created_at ON {{table(e)}} (created_at DESC);
+{% endfor %}
+
+-- Outbox доменных событий (публикуется в Kafka фоновым диспетчером)
+CREATE TABLE outbox_events (
+    id uuid PRIMARY KEY,
+    type varchar(128) NOT NULL,
+    version integer NOT NULL,
+    topic varchar(128) NOT NULL,
+    key varchar(128),
+    entity_id uuid,
+    payload jsonb NOT NULL,
+    occurred_at timestamptz NOT NULL,
+    published_at timestamptz,
+    attempts integer NOT NULL DEFAULT 0
+);
+CREATE INDEX ix_outbox_unpublished ON outbox_events (occurred_at) WHERE published_at IS NULL;
+CREATE INDEX ix_outbox_type_time ON outbox_events (type, occurred_at DESC);
+CREATE INDEX ix_outbox_entity ON outbox_events (entity_id);
+
+-- События, обработанные Kafka-консьюмером (идемпотентность по event_id)
+CREATE TABLE consumed_events (
+    event_id uuid PRIMARY KEY,
+    type varchar(128) NOT NULL,
+    topic varchar(128) NOT NULL,
+    partition integer NOT NULL,
+    "offset" bigint NOT NULL,
+    payload jsonb NOT NULL,
+    consumed_at timestamptz NOT NULL
+);
+
+CREATE TABLE notifications (
+    id uuid PRIMARY KEY,
+    user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    title varchar(255) NOT NULL,
+    body text NOT NULL,
+    event_type varchar(128) NOT NULL,
+    event_id uuid,
+    created_at timestamptz NOT NULL,
+    read_at timestamptz
+);
+CREATE INDEX ix_notifications_user_time ON notifications (user_id, created_at DESC);
+
+CREATE TABLE idempotency_keys (
+    key varchar(512) PRIMARY KEY,
+    status_code integer NOT NULL,
+    body text NOT NULL,
+    created_at timestamptz NOT NULL
+);

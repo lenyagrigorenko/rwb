@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Фабрика приложений</title>
+<style>
+  :root {
+    --bg: #0b1220; --panel: #121b2e; --panel2: #18233a; --line: #24324f; --text: #e6ecf7; --muted: #8fa0bf;
+    --accent: #4f8cff; --ok: #34c38f; --run: #f5b84b; --fail: #ff6b6b; --skip: #6c7a96;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; align-items: center; gap: 16px; padding: 14px 24px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 18px; margin: 0; }
+  header .sub { color: var(--muted); }
+  .grid { display: grid; grid-template-columns: 360px 1fr 340px; gap: 16px; padding: 16px 24px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; }
+  textarea { width: 100%; min-height: 360px; background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+             border-radius: 10px; padding: 10px; font: 12.5px/1.45 ui-monospace, Menlo, monospace; resize: vertical; }
+  select, input[type=file], input[type=text] { width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+             border-radius: 8px; padding: 8px; margin-bottom: 10px; }
+  button { background: var(--accent); color: white; border: 0; border-radius: 10px; padding: 10px 16px; font-weight: 600; cursor: pointer; }
+  button.secondary { background: var(--panel2); border: 1px solid var(--line); color: var(--text); }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .office { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+  .agent { background: var(--panel2); border: 1px solid var(--line); border-radius: 12px; padding: 12px; position: relative; min-height: 112px; transition: border-color .3s, transform .3s; }
+  .agent .who { display: flex; align-items: center; gap: 10px; }
+  .avatar { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; font-size: 20px; background: #0e1628; border: 2px solid var(--line); }
+  .agent .role { font-weight: 600; }
+  .agent .task { color: var(--muted); font-size: 12.5px; }
+  .agent .detail { margin-top: 8px; font-size: 12.5px; color: var(--text); opacity: .9; }
+  .agent .time { position: absolute; top: 10px; right: 12px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .agent.running { border-color: var(--run); transform: translateY(-2px); box-shadow: 0 6px 24px rgba(245,184,75,.15); }
+  .agent.running .avatar { border-color: var(--run); animation: pulse 1.2s infinite; }
+  .agent.done { border-color: rgba(52,195,143,.6); }
+  .agent.done .avatar { border-color: var(--ok); }
+  .agent.failed { border-color: var(--fail); }
+  .agent.skipped { opacity: .55; }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(245,184,75,.5); } 50% { box-shadow: 0 0 0 8px rgba(245,184,75,0); } }
+  .flow { height: 4px; background: var(--line); border-radius: 4px; margin: 14px 0 4px; overflow: hidden; }
+  .flow > div { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--ok)); transition: width .5s; }
+  .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .metric { background: var(--panel2); border-radius: 10px; padding: 10px; }
+  .metric .v { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .metric .k { color: var(--muted); font-size: 12px; }
+  .log { max-height: 220px; overflow: auto; font: 12px/1.5 ui-monospace, Menlo, monospace; color: var(--muted); }
+  .log b { color: var(--text); font-weight: 500; }
+  .question { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-bottom: 10px; }
+  .question .q { font-weight: 600; margin-bottom: 4px; }
+  .question .def { color: var(--muted); font-size: 12.5px; margin: 4px 0 8px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; background: var(--line); }
+  .badge.high { background: rgba(255,107,107,.2); color: #ffb3b3; }
+  .badge.medium { background: rgba(245,184,75,.2); color: #ffd99a; }
+  .results a { color: #9cc0ff; }
+  .docs { display: grid; grid-template-columns: 220px 1fr; gap: 12px; margin-top: 12px; }
+  .doclist button { display: block; width: 100%; text-align: left; margin-bottom: 4px; padding: 6px 10px; font-weight: 400; }
+  .doc { background: #0e1628; border-radius: 10px; padding: 14px; max-height: 520px; overflow: auto; font-size: 13px; }
+  .doc table { border-collapse: collapse; margin: 8px 0; font-size: 12px; }
+  .doc td, .doc th { border: 1px solid var(--line); padding: 4px 6px; vertical-align: top; }
+  .doc pre { background: #0b1220; padding: 8px; border-radius: 8px; overflow: auto; }
+  .status { font-weight: 600; }
+  .status.done { color: var(--ok); } .status.failed { color: var(--fail); } .status.running { color: var(--run); }
+  .hidden { display: none; }
+  @media (max-width: 1200px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>🏭 Фабрика приложений</h1>
+  <span class="sub">бизнес-требования → анализ → архитектура → код → тесты → документация → запуск · Qwen3.8-27B</span>
+  <span style="flex:1"></span>
+  <span id="runStatus" class="status"></span>
+</header>
+<div class="grid">
+  <section class="panel">
+    <h2>Бизнес-требования</h2>
+    <select id="preset"><option value="">— свои требования —</option></select>
+    <textarea id="req" placeholder="Вставьте формализованные бизнес-требования…"></textarea>
+    <div style="margin:10px 0 4px;color:var(--muted);font-size:12px">Данные (JSON/CSV), необязательно</div>
+    <input type="file" id="files" multiple />
+    <div class="row">
+      <button id="start">▶ Запустить конвейер</button>
+      <span style="color:var(--muted);font-size:12px">ожидание ответов: <input id="timeout" type="text" value="60" style="width:46px;margin:0;padding:4px"/> с</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Виртуальная команда</h2>
+    <div class="flow"><div id="progress"></div></div>
+    <div class="office" id="office"></div>
+    <div id="results" class="results hidden" style="margin-top:16px">
+      <h2>Результат</h2>
+      <div class="row" id="resultLinks"></div>
+      <div class="docs">
+        <div class="doclist" id="doclist"></div>
+        <div class="doc" id="doc">Выберите документ</div>
+      </div>
+    </div>
+  </section>
+
+  <aside>
+    <div class="panel">
+      <h2>Эффективность</h2>
+      <div class="metrics">
+        <div class="metric"><div class="v" id="mCalls">0</div><div class="k">вызовов модели</div></div>
+        <div class="metric"><div class="v" id="mRetries">0</div><div class="k">повторов генерации</div></div>
+        <div class="metric"><div class="v" id="mIn">0</div><div class="k">входных токенов</div></div>
+        <div class="metric"><div class="v" id="mOut">0</div><div class="k">выходных токенов</div></div>
+        <div class="metric"><div class="v" id="mTime">0 с</div><div class="k">время конвейера</div></div>
+        <div class="metric"><div class="v">0</div><div class="k">ручных правок</div></div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:16px" id="qPanel">
+      <h2>Уточняющие вопросы</h2>
+      <div id="questions" style="color:var(--muted)">Появятся после анализа требований</div>
+    </div>
+    <div class="panel" style="margin-top:16px">
+      <h2>Журнал</h2>
+      <div class="log" id="log"></div>
+    </div>
+  </aside>
+</div>
+
+<script>
+const AVATARS = { 'Аналитик': '🧑‍💼', 'Архитектор': '🏛️', 'Конвейер': '⚙️', 'Программист': '👩‍💻', 'QA и безопасность': '🛡️', 'Техписатель': '📝', 'DevOps': '🚀' };
+const $ = (id) => document.getElementById(id);
+let presets = [], runId = null, timers = null, answered = false, state = null;
+
+async function loadPresets() {
+  presets = await (await fetch('/api/presets')).json();
+  for (const p of presets) $('preset').insertAdjacentHTML('beforeend', `<option value="${p.id}">${esc(p.title)}</option>`);
+}
+$('preset').onchange = () => { const p = presets.find(x => x.id === $('preset').value); $('req').value = p ? p.requirements : ''; };
+
+$('start').onclick = async () => {
+  if (!$('req').value.trim()) return alert('Вставьте требования');
+  const fd = new FormData();
+  fd.append('requirements', $('req').value);
+  fd.append('preset', $('preset').value);
+  fd.append('answer_timeout', $('timeout').value || '60');
+  for (const f of $('files').files) fd.append('files', f);
+  $('start').disabled = true;
+  const r = await (await fetch('/api/runs', { method: 'POST', body: fd })).json();
+  watch(r.run_id);
+};
+
+function watch(id) {
+  runId = id; answered = false;
+  history.replaceState(null, '', '#' + id);
+  const es = new EventSource(`/api/runs/${id}/stream`);
+  es.onmessage = (e) => render(JSON.parse(e.data));
+  es.onerror = () => { es.close(); setTimeout(() => fetch(`/api/runs/${id}`).then(r => r.json()).then(render), 1000); };
+  clearInterval(timers); timers = setInterval(() => state && renderOffice(state), 1000);
+}
+
+function render(s) {
+  state = s;
+  $('runStatus').textContent = { running: 'выполняется…', done: 'готово', failed: 'ошибка' }[s.status] || s.status;
+  $('runStatus').className = 'status ' + s.status;
+  renderOffice(s);
+  const m = s.metrics || {};
+  $('mCalls').textContent = m.calls ?? 0; $('mRetries').textContent = m.retries ?? 0;
+  $('mIn').textContent = fmt(m.prompt_tokens); $('mOut').textContent = fmt(m.completion_tokens);
+  $('mTime').textContent = (m.wall_seconds ?? 0).toFixed(0) + ' с';
+  $('log').innerHTML = (s.log || []).slice(-60).map(l => `<div><b>${l.t.toFixed(0)}s</b> ${esc(l.text)}</div>`).join('');
+  $('log').scrollTop = 1e9;
+  renderQuestions(s);
+  if (s.status !== 'running') { $('start').disabled = false; clearInterval(timers); }
+  if (s.status === 'done') showResults(s);
+}
+
+function renderOffice(s) {
+  const entries = Object.entries(s.stages);
+  const done = entries.filter(([, v]) => ['done', 'skipped'].includes(v.status)).length;
+  $('progress').style.width = (done / entries.length * 100) + '%';
+  $('office').innerHTML = entries.map(([k, v]) => {
+    const t = v.started ? ((v.finished || Date.now() / 1000) - v.started) : 0;
+    return `<div class="agent ${v.status}">
+      <div class="time">${v.started ? t.toFixed(0) + ' с' : ''}</div>
+      <div class="who"><div class="avatar">${AVATARS[v.agent] || '🤖'}</div>
+      <div><div class="role">${esc(v.agent)}</div><div class="task">${esc(v.title)}</div></div></div>
+      <div class="detail">${esc(v.detail || { pending: 'ожидает', running: 'работает…' }[v.status] || '')}</div></div>`;
+  }).join('');
+}
+
+function renderQuestions(s) {
+  const qs = s.questions || [];
+  if (!qs.length) return;
+  const waiting = s.stages.clarify.status === 'running' && !answered;
+  $('questions').innerHTML = qs.map(q => `<div class="question">
+      <div><span class="badge ${q.impact}">${q.impact}</span> <span class="badge">${(q.affects || []).join(', ')}</span></div>
+      <div class="q">${esc(q.question)}</div>
+      <div class="def">По умолчанию: ${esc(q.default_answer)} — ${esc(q.rationale)}</div>
+      ${waiting ? `<input type="text" data-q="${q.id}" placeholder="Ваш ответ (пусто — по умолчанию)"/>` : `<div>✔ ${esc(q.answer || q.default_answer)}</div>`}
+    </div>`).join('') + (waiting ? `<button id="sendAnswers">Отправить ответы</button>` : '');
+  if (waiting) $('sendAnswers').onclick = async () => {
+    const answers = {};
+    document.querySelectorAll('[data-q]').forEach(i => { if (i.value.trim()) answers[i.dataset.q] = i.value.trim(); });
+    answered = true;
+    await fetch(`/api/runs/${runId}/answers`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(answers) });
+  };
+}
+
+async function showResults(s) {
+  $('results').classList.remove('hidden');
+  const r = s.result || {};
+  $('resultLinks').innerHTML = `
+    <span>Сборка: <b class="status ${r.build_ok ? 'done' : 'failed'}">${r.build_ok ? 'успешно' : 'ошибки'}</b></span>
+    <button class="secondary" id="deployBtn">🚀 Развернуть и открыть</button>
+    <a href="/api/runs/${runId}/archive">⬇ Архив проекта</a>
+    ${r.apk ? `<a href="/api/runs/${runId}/apk">📱 APK</a><img src="/api/runs/${runId}/apk-qr" alt="QR APK" style="width:96px;height:96px;background:#fff;border-radius:8px;padding:4px"/>` : ''}
+    ${r.web_url ? `<a href="${r.web_url}" target="_blank">Стенд: web</a>` : ''}
+    ${r.video ? `<a href="/api/runs/${runId}/media?path=docs/demo.webm" target="_blank">🎬 Видео демо</a>` : ''}
+    <span id="deployInfo" style="color:var(--muted)"></span>`;
+  $('deployBtn').onclick = async () => {
+    $('deployBtn').disabled = true; $('deployInfo').textContent = 'сборка контейнеров…';
+    const d = await (await fetch(`/api/runs/${runId}/deploy`, { method: 'POST' })).json();
+    $('deployInfo').innerHTML = d.ok ? `<a href="${d.web}" target="_blank">Web-интерфейс</a> · <a href="${d.api}" target="_blank">API</a>` : 'ошибка развёртывания';
+    $('deployBtn').disabled = false;
+  };
+  const docs = await (await fetch(`/api/runs/${runId}/docs`)).json();
+  $('doclist').innerHTML = docs.map(d => `<button class="secondary" data-doc="${d}">${esc(d.replace('docs/', ''))}</button>`).join('');
+  document.querySelectorAll('[data-doc]').forEach(b => b.onclick = () => openDoc(b.dataset.doc));
+  if (docs.includes('docs/jury-scorecard.md')) openDoc('docs/jury-scorecard.md');
+}
+
+async function openDoc(path) {
+  const text = await (await fetch(`/api/runs/${runId}/file?path=${encodeURIComponent(path)}`)).text();
+  $('doc').innerHTML = md(text);
+}
+
+function md(src) {
+  const lines = src.split('\n'); let html = '', table = null, code = false;
+  const inline = (t) => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<u>$1</u>');
+  for (const l of lines) {
+    if (l.startsWith('```')) { html += code ? '</pre>' : '<pre>'; code = !code; continue; }
+    if (code) { html += esc(l) + '\n'; continue; }
+    if (l.startsWith('|')) {
+      if (/^\|[-| ]+\|$/.test(l.trim())) continue;
+      const cells = l.trim().slice(1, -1).split('|');
+      if (!table) { html += '<table>'; table = true; html += '<tr>' + cells.map(c => `<th>${inline(c.trim())}</th>`).join('') + '</tr>'; }
+      else html += '<tr>' + cells.map(c => `<td>${inline(c.trim())}</td>`).join('') + '</tr>';
+      continue;
+    } else if (table) { html += '</table>'; table = null; }
+    const h = l.match(/^(#{1,4}) (.*)/);
+    if (h) html += `<h${h[1].length + 1}>${inline(h[2])}</h${h[1].length + 1}>`;
+    else if (/^\s*[-*] /.test(l)) html += `<div>• ${inline(l.replace(/^\s*[-*] /, ''))}</div>`;
+    else if (l.trim()) html += `<p>${inline(l)}</p>`;
+  }
+  return html + (table ? '</table>' : '');
+}
+
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const fmt = (n) => (n ?? 0).toLocaleString('ru-RU');
+loadPresets();
+if (location.hash.length > 1) watch(location.hash.slice(1));
+window.addEventListener('hashchange', () => location.hash.length > 1 && watch(location.hash.slice(1)));
+</script>
+</body>
+</html>

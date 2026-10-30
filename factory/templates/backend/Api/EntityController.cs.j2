@@ -1,0 +1,63 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using {{N}}.Application.Common;
+using {{N}}.Application.Dtos;
+using {{N}}.Application.Services;
+
+namespace {{N}}.Api.Controllers;
+
+/// <summary>{{e.title_plural}}. {{e.description}}</summary>
+[ApiController]
+[Authorize]
+[Route("api/v1/{{route(e)}}")]
+[Tags({{cs_string(e.title_plural)}})]
+public sealed class {{plural(e.name)}}Controller({{e.name}}Service service) : ControllerBase
+{
+    /// <summary>Список: {{e.title_plural|lower}} (пагинация, сортировка, поиск q, фильтры).</summary>
+    [HttpGet]
+    public Task<PagedResult<{{e.name}}Dto>> List([FromQuery] ListQuery query, [FromQuery] {{e.name}}Filter filter, CancellationToken ct) =>
+        service.ListAsync(query, filter, ct);
+
+    /// <summary>{{e.title}} по идентификатору.</summary>
+    [HttpGet("{id:guid}")]
+    public Task<{{e.name}}Dto> Get(Guid id, CancellationToken ct) => service.GetAsync(id, ct);
+
+    /// <summary>Создать: {{e.title|lower}}.</summary>
+    [HttpPost]
+    [ProducesResponseType(StatusCodes.Status201Created)]
+    public async Task<ActionResult<{{e.name}}Dto>> Create({{e.name}}UpsertRequest request, CancellationToken ct)
+    {
+        var dto = await service.CreateAsync(request, ct);
+        return CreatedAtAction(nameof(Get), new { id = dto.Id }, dto);
+    }
+
+    /// <summary>Изменить: {{e.title|lower}}.</summary>
+    [HttpPut("{id:guid}")]
+    public Task<{{e.name}}Dto> Update(Guid id, {{e.name}}UpsertRequest request, CancellationToken ct) => service.UpdateAsync(id, request, ct);
+
+    /// <summary>Удалить: {{e.title|lower}}.</summary>
+    [HttpDelete("{id:guid}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
+    {
+        await service.DeleteAsync(id, ct);
+        return NoContent();
+    }
+{% if e.lifecycle %}
+{% for t in e.lifecycle.transitions %}
+
+    /// <summary>Действие «{{t.title}}»: {{ t.from_states | join(', ') }} → {{t.to}}. Роли: {{ t.roles | join(', ') }}.</summary>
+    [HttpPost("{id:guid}/{{kebab(t.name)}}")]
+    public Task<{{e.name}}Dto> {{pascal(t.name)}}(Guid id, CancellationToken ct) => service.TransitionAsync(id, "{{t.name}}", ct);
+{% endfor %}
+{% endif %}
+{% if e.geo_fields %}
+
+    /// <summary>{{e.title_plural}} в формате GeoJSON для карты (bbox=minLon,minLat,maxLon,maxLat).</summary>
+    [HttpGet("geojson")]
+    [Produces("application/geo+json")]
+    public async Task<ContentResult> GeoJson([FromQuery] string? bbox, CancellationToken ct) =>
+        Content(await service.GeoJsonAsync(bbox, ct), "application/geo+json");
+{% endif %}
+}

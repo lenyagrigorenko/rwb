@@ -1,0 +1,185 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}
+using System.Security.Claims;
+using System.Text;
+using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.JsonWebTokens;
+using Microsoft.IdentityModel.Tokens;
+using Npgsql;
+using {{N}}.Application.Abstractions;
+using {{N}}.Application.Common;
+using {{N}}.Domain.Entities;
+using {{N}}.Infrastructure.Persistence;
+
+namespace {{N}}.Api.Infrastructure;
+
+public sealed class CurrentUser(IHttpContextAccessor http) : ICurrentUser
+{
+    private ClaimsPrincipal? Principal => http.HttpContext?.User;
+
+    public Guid? UserId => Guid.TryParse(Principal?.FindFirst("sub")?.Value, out var id) ? id : null;
+
+    public string? Role => Principal?.FindFirst("role")?.Value;
+
+    public bool IsAuthenticated => Principal?.Identity?.IsAuthenticated == true;
+
+    public Guid RequireUserId() => UserId ?? throw new AppException("Требуется аутентификация", 401, "unauthorized");
+}
+
+/// <summary>Выпуск JWT (HS256, 12 часов).</summary>
+public sealed class JwtTokenService(IConfiguration cfg)
+{
+    public const string Issuer = "{{spec.slug}}";
+
+    public (string Token, DateTimeOffset ExpiresAt) Issue(AppUser user)
+    {
+        var expires = DateTime.UtcNow.AddHours(12);
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(cfg["Jwt:Key"]!));
+        var token = new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
+        {
+            Issuer = Issuer,
+            Audience = Issuer,
+            Expires = expires,
+            SigningCredentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256),
+            Claims = new Dictionary<string, object>
+            {
+                ["sub"] = user.Id.ToString(),
+                ["role"] = user.Role,
+                ["name"] = user.DisplayName,
+                ["login"] = user.Login,
+            },
+        });
+        return (token, new DateTimeOffset(expires));
+    }
+}
+
+/// <summary>Единый формат ошибок: ProblemDetails с полями code, traceId и errors.</summary>
+public sealed class AppExceptionHandler(IProblemDetailsService problems, ILogger<AppExceptionHandler> log) : IExceptionHandler
+{
+    public async ValueTask<bool> TryHandleAsync(HttpContext ctx, Exception ex, CancellationToken ct)
+    {
+        int status;
+        string code, title;
+        IDictionary<string, string[]>? errors = null;
+        switch (ex)
+        {
+            case ValidationException v:
+                (status, code, title, errors) = (400, v.Code, v.Message, v.Errors);
+                break;
+            case AppException a:
+                (status, code, title) = (a.Status, a.Code, a.Message);
+                break;
+            case DbUpdateException { InnerException: PostgresException { SqlState: "23505" } }:
+                (status, code, title) = (409, "conflict", "Запись с такими данными уже существует");
+                break;
+            case DbUpdateException { InnerException: PostgresException { SqlState: "23503" } }:
+                (status, code, title) = (409, "conflict", "Операция нарушает связи между данными");
+                break;
+            case DbUpdateException { InnerException: PostgresException { SqlState: "23514" } }:
+                (status, code, title) = (400, "validation", "Значение не прошло проверку ограничений");
+                break;
+            case DbUpdateException { InnerException: PostgresException { SqlState: "22001" } }:
+                (status, code, title) = (400, "validation", "Значение превышает допустимую длину поля");
+                break;
+            case DbUpdateException { InnerException: PostgresException { SqlState: "23502" } }:
+                (status, code, title) = (400, "validation", "Не заполнено обязательное поле");
+                break;
+            case BadHttpRequestException b:
+                (status, code, title) = (400, "bad_request", b.Message);
+                break;
+            case HttpRequestException:
+                (status, code, title) = (502, "integration_unavailable", "Внешняя система недоступна");
+                break;
+            default:
+                (status, code, title) = (500, "internal_error", "Внутренняя ошибка сервера");
+                break;
+        }
+        if (status >= 500) log.LogError(ex, "Request failed with {Status}", status);
+        else log.LogInformation("Request rejected: {Code} {Message}", code, ex.Message);
+
+        ctx.Response.StatusCode = status;
+        var problem = new ProblemDetails
+        {
+            Status = status,
+            Title = title,
+            Type = $"https://httpstatuses.io/{status}",
+            Instance = ctx.Request.Path,
+        };
+        problem.Extensions["code"] = code;
+        problem.Extensions["traceId"] = ctx.TraceIdentifier;
+        if (errors is not null) problem.Extensions["errors"] = errors;
+        return await problems.TryWriteAsync(new ProblemDetailsContext { HttpContext = ctx, ProblemDetails = problem, Exception = ex });
+    }
+}
+
+/// <summary>Корреляционный идентификатор запроса в логах и заголовке X-Correlation-Id.</summary>
+public sealed class CorrelationIdMiddleware(RequestDelegate next, ILogger<CorrelationIdMiddleware> log)
+{
+    public async Task InvokeAsync(HttpContext ctx)
+    {
+        var id = ctx.Request.Headers["X-Correlation-Id"].FirstOrDefault() ?? ctx.TraceIdentifier;
+        ctx.Response.Headers["X-Correlation-Id"] = id;
+        ctx.Response.Headers["api-version"] = "1";
+        using (log.BeginScope(new Dictionary<string, object> { ["CorrelationId"] = id }))
+        {
+            var started = System.Diagnostics.Stopwatch.GetTimestamp();
+            await next(ctx);
+            if (ctx.Request.Path.StartsWithSegments("/api"))
+            {
+                log.LogInformation("{Method} {Path} -> {Status} in {Elapsed} ms", ctx.Request.Method, ctx.Request.Path,
+                    ctx.Response.StatusCode, (int)System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            }
+        }
+    }
+}
+
+/// <summary>Идемпотентность POST-запросов с заголовком Idempotency-Key: повтор возвращает сохранённый ответ.</summary>
+public sealed class IdempotencyMiddleware(RequestDelegate next)
+{
+    public async Task InvokeAsync(HttpContext ctx, IServiceScopeFactory scopes)
+    {
+        var key = ctx.Request.Headers["Idempotency-Key"].FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(key) || !HttpMethods.IsPost(ctx.Request.Method))
+        {
+            await next(ctx);
+            return;
+        }
+        var scopeKey = $"{ctx.User.FindFirst("sub")?.Value}:{ctx.Request.Path}:{key}";
+        using (var scope = scopes.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var saved = await db.IdempotencyRecords.AsNoTracking().FirstOrDefaultAsync(x => x.Key == scopeKey);
+            if (saved is not null)
+            {
+                ctx.Response.StatusCode = saved.StatusCode;
+                ctx.Response.ContentType = "application/json";
+                ctx.Response.Headers["Idempotent-Replayed"] = "true";
+                await ctx.Response.WriteAsync(saved.Body);
+                return;
+            }
+        }
+        var original = ctx.Response.Body;
+        await using var buffer = new MemoryStream();
+        ctx.Response.Body = buffer;
+        try
+        {
+            await next(ctx);
+            buffer.Position = 0;
+            var body = await new StreamReader(buffer).ReadToEndAsync();
+            if (ctx.Response.StatusCode is >= 200 and < 300)
+            {
+                using var scope = scopes.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                db.IdempotencyRecords.Add(new IdempotencyRecord { Key = scopeKey, StatusCode = ctx.Response.StatusCode, Body = body, CreatedAt = DateTimeOffset.UtcNow });
+                try { await db.SaveChangesAsync(); } catch (DbUpdateException) { /* concurrent duplicate: first one wins */ }
+            }
+            buffer.Position = 0;
+            await buffer.CopyToAsync(original);
+        }
+        finally
+        {
+            ctx.Response.Body = original;
+        }
+    }
+}

@@ -1,0 +1,301 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}
+using System.Globalization;
+using System.Text.Json;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using NetTopologySuite.Geometries;
+using NetTopologySuite.IO;
+using NetTopologySuite.IO.Converters;
+using Npgsql;
+using {{N}}.Application.Abstractions;
+using {{N}}.Domain.Entities;
+
+namespace {{N}}.Infrastructure.Persistence;
+
+/// <summary>Применяет встроенные SQL-миграции по порядку, под advisory lock.</summary>
+public sealed class MigrationRunner(AppDbContext db, ILogger<MigrationRunner> log)
+{
+    public async Task RunAsync(CancellationToken ct)
+    {
+        await db.Database.OpenConnectionAsync(ct);
+        try
+        {
+            var conn = (NpgsqlConnection)db.Database.GetDbConnection();
+            await Exec(conn, "SELECT pg_advisory_lock(727001)", ct);
+            await Exec(conn, "CREATE TABLE IF NOT EXISTS schema_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())", ct);
+            var asm = typeof(MigrationRunner).Assembly;
+            foreach (var resource in asm.GetManifestResourceNames().Where(n => n.EndsWith(".sql", StringComparison.Ordinal)).Order())
+            {
+                var version = resource.Split('.')[^2];
+                await using (var check = new NpgsqlCommand("SELECT 1 FROM schema_migrations WHERE version = @v", conn))
+                {
+                    check.Parameters.AddWithValue("v", version);
+                    if (await check.ExecuteScalarAsync(ct) is not null) continue;
+                }
+                await using var stream = asm.GetManifestResourceStream(resource)!;
+                var sql = await new StreamReader(stream).ReadToEndAsync(ct);
+                await using var tx = await conn.BeginTransactionAsync(ct);
+                await using (var cmd = new NpgsqlCommand(sql, conn, tx)) await cmd.ExecuteNonQueryAsync(ct);
+                await using (var mark = new NpgsqlCommand("INSERT INTO schema_migrations(version) VALUES (@v)", conn, tx))
+                {
+                    mark.Parameters.AddWithValue("v", version);
+                    await mark.ExecuteNonQueryAsync(ct);
+                }
+                await tx.CommitAsync(ct);
+                log.LogInformation("Applied migration {Version}", version);
+            }
+            await Exec(conn, "SELECT pg_advisory_unlock(727001)", ct);
+            await conn.ReloadTypesAsync(ct);
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
+    }
+
+    private static async Task Exec(NpgsqlConnection conn, string sql, CancellationToken ct)
+    {
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+}
+
+/// <summary>Тестовые данные: демо-пользователи, синтетические записи и импорт приложенных датасетов.</summary>
+public sealed class Seeder(AppDbContext db, IPasswordHasher<AppUser> hasher, IConfiguration cfg, TimeProvider clock, ILogger<Seeder> log)
+{
+    private static readonly JsonSerializerOptions SeedJson = CreateSeedJson();
+
+    private static JsonSerializerOptions CreateSeedJson()
+    {
+        var o = new JsonSerializerOptions(AppJson.Options);
+        o.Converters.Add(new GeoJsonConverterFactory());
+        return o;
+    }
+
+    public async Task RunAsync(CancellationToken ct)
+    {
+        await using var stream = typeof(Seeder).Assembly.GetManifestResourceStream("seed.json")!;
+        using var seed = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+        var now = clock.GetUtcNow();
+
+        if (!await db.Users.AnyAsync(ct))
+        {
+            var password = cfg["Seed:DemoPassword"];
+            if (string.IsNullOrWhiteSpace(password))
+            {
+                password = "Demo2026!";
+                log.LogWarning("Seed:DemoPassword is not set, using the default demo password");
+            }
+            foreach (var u in seed.RootElement.GetProperty("users").EnumerateArray())
+            {
+                var user = new AppUser
+                {
+                    Id = u.GetProperty("id").GetGuid(),
+                    Login = u.GetProperty("login").GetString()!,
+                    DisplayName = u.GetProperty("displayName").GetString()!,
+                    Role = u.GetProperty("role").GetString()!,
+                    CreatedAt = now,
+                };
+                user.PasswordHash = hasher.HashPassword(user, password);
+                db.Users.Add(user);
+            }
+            await db.SaveChangesAsync(ct);
+            log.LogInformation("Seeded demo users");
+        }
+
+        await ImportDatasetsAsync(ct);
+
+        foreach (var block in seed.RootElement.GetProperty("entities").EnumerateArray())
+        {
+            var name = block.GetProperty("entity").GetString()!;
+            var type = typeof(EntityBase).Assembly.GetType($"{{N}}.Domain.Entities.{name}")!;
+            var exists = await HasRowsAsync(name, ct);
+            if (exists) continue;
+            try
+            {
+                foreach (var row in block.GetProperty("rows").EnumerateArray())
+                {
+                    var entity = (EntityBase)row.Deserialize(type, SeedJson)!;
+                    entity.CreatedAt = now;
+                    entity.UpdatedAt = now;
+                    db.Add(entity);
+                }
+                await db.SaveChangesAsync(ct);
+                log.LogInformation("Seeded {Entity}", name);
+            }
+            catch (Exception ex) when (ex is DbUpdateException or JsonException)
+            {
+                db.ChangeTracker.Clear();
+                log.LogError(ex, "Seeding {Entity} failed, continuing without test data for it", name);
+            }
+        }
+        db.ChangeTracker.Clear();
+    }
+
+    private Task<bool> HasRowsAsync(string entity, CancellationToken ct) => entity switch
+    {
+{% for e in spec.entities %}
+        "{{e.name}}" => db.{{plural(e.name)}}.AnyAsync(ct),
+{% endfor %}
+        _ => Task.FromResult(true),
+    };
+
+    private async Task ImportDatasetsAsync(CancellationToken ct)
+    {
+        var dir = cfg["Seed:DataDir"] ?? Path.Combine(AppContext.BaseDirectory, "seed-data");
+{% for ds in dataset_vms %}
+        await Import{{ds.Name}}Async(Path.Combine(dir, "{{ds.file}}"), ct);
+{% endfor %}
+        await Task.CompletedTask;
+    }
+{% for ds in dataset_vms %}
+
+    /// <summary>Импорт датасета «{{ds.name}}» ({{ds.file}}) в {{ds.entity}}.</summary>
+    private async Task Import{{ds.Name}}Async(string path, CancellationToken ct)
+    {
+        if (await db.{{ds.set}}.AnyAsync(ct)) return;
+        if (!File.Exists(path))
+        {
+            log.LogWarning("Dataset {Path} not found, skipping", path);
+            return;
+        }
+        using var doc = JsonDocument.Parse(await File.ReadAllBytesAsync(path, ct));
+        var records = Find(doc.RootElement, "{{ds.records_path}}");
+        if (records.ValueKind != JsonValueKind.Array) return;
+        var now = clock.GetUtcNow();
+        var count = 0;
+        foreach (var r in records.EnumerateArray())
+        {
+            var e = new {{ds.entity}} { CreatedAt = now, UpdatedAt = now };
+{% for m in ds.assignments %}
+            e.{{m.Name}} = {{m.expr}};
+{% endfor %}
+            db.{{ds.set}}.Add(e);
+            if (++count % 1000 == 0)
+            {
+                await db.SaveChangesAsync(ct);
+                db.ChangeTracker.Clear();
+            }
+        }
+        await db.SaveChangesAsync(ct);
+        db.ChangeTracker.Clear();
+        log.LogInformation("Imported {Count} rows into {{ds.entity}} from {{ds.file}}", count);
+    }
+{% endfor %}
+
+    private static JsonElement Find(JsonElement root, string path)
+    {
+        var cur = root;
+        foreach (var part in path.Split('.', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (cur.ValueKind != JsonValueKind.Object || !cur.TryGetProperty(part, out cur)) return default;
+        }
+        return cur;
+    }
+
+    private static string? S(JsonElement r, string path)
+    {
+        var v = Find(r, path);
+        return v.ValueKind switch
+        {
+            JsonValueKind.String => v.GetString(),
+            JsonValueKind.Undefined or JsonValueKind.Null => null,
+            _ => v.GetRawText(),
+        };
+    }
+
+    private static string? Trim(string? s, int max) => s is null || s.Length <= max ? s : s[..max];
+
+    private static int? I(JsonElement r, string path)
+    {
+        var v = Find(r, path);
+        if (v.ValueKind == JsonValueKind.Number) return v.TryGetInt32(out var i) ? i : (int)Math.Round(v.GetDouble());
+        return int.TryParse(S(r, path), NumberStyles.Any, CultureInfo.InvariantCulture, out var p) ? p : null;
+    }
+
+    private static decimal? D(JsonElement r, string path)
+    {
+        var v = Find(r, path);
+        if (v.ValueKind == JsonValueKind.Number) return v.GetDecimal();
+        return decimal.TryParse(S(r, path)?.Replace(',', '.'), NumberStyles.Any, CultureInfo.InvariantCulture, out var p) ? p : null;
+    }
+
+    private static readonly HashSet<string> TrueWords = new(StringComparer.OrdinalIgnoreCase)
+        { "true", "1", "yes", "y", "да", "active", "enabled", "on", "available", "open" };
+
+    private static readonly HashSet<string> FalseWords = new(StringComparer.OrdinalIgnoreCase)
+        { "false", "0", "no", "n", "нет", "inactive", "disabled", "off", "unavailable", "closed", "deleted" };
+
+    private static bool? B(JsonElement r, string path)
+    {
+        var v = Find(r, path);
+        if (v.ValueKind == JsonValueKind.True) return true;
+        if (v.ValueKind == JsonValueKind.False) return false;
+        if (v.ValueKind == JsonValueKind.Number) return v.GetDouble() != 0;
+        var s = S(r, path)?.Trim();
+        if (s is null) return null;
+        if (TrueWords.Contains(s)) return true;
+        if (FalseWords.Contains(s)) return false;
+        return null;
+    }
+
+    private static DateTimeOffset? T(JsonElement r, string path) =>
+        DateTimeOffset.TryParse(S(r, path), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var t) ? t.ToUniversalTime() : null;
+
+    private static DateOnly? Dt(JsonElement r, string path) =>
+        DateOnly.TryParse(S(r, path), CultureInfo.InvariantCulture, out var d) ? d : null;
+
+    private static string? J(JsonElement r, string path)
+    {
+        var v = Find(r, path);
+        return v.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null ? null : v.GetRawText();
+    }
+
+    private static readonly WKTReader Wkt = new();
+
+    private static Geometry? G(JsonElement r, string path, string format)
+    {
+        try
+        {
+            Geometry? g = format == "wkt"
+                ? (S(r, path) is { Length: > 0 } text ? Wkt.Read(text) : null)
+                : (J(r, path) is { } json ? JsonSerializer.Deserialize<Geometry>(json, GeoJson.Options) : null);
+            if (g is not null) g.SRID = 4326;
+            return g;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+}
+
+public static class DatabaseInitializer
+{
+    /// <summary>Ожидает БД, применяет миграции и тестовые данные.</summary>
+    public static async Task InitializeDatabaseAsync(this IServiceProvider services, CancellationToken ct = default)
+    {
+        var log = services.GetRequiredService<ILoggerFactory>().CreateLogger("DatabaseInitializer");
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                using var scope = services.CreateScope();
+                await scope.ServiceProvider.GetRequiredService<MigrationRunner>().RunAsync(ct);
+                break;
+            }
+            catch (Exception ex) when (attempt < 30 && ex is NpgsqlException or TimeoutException or InvalidOperationException)
+            {
+                log.LogWarning("Database is not ready (attempt {Attempt}): {Message}", attempt, ex.Message);
+                await Task.Delay(TimeSpan.FromSeconds(2), ct);
+            }
+        }
+        using (var scope = services.CreateScope())
+        {
+            await scope.ServiceProvider.GetRequiredService<Seeder>().RunAsync(ct);
+        }
+    }
+}

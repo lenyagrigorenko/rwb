@@ -1,0 +1,30 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}
+using {{N}}.Application.Abstractions;
+
+namespace {{N}}.Application.Events;
+{% for ev in spec.events %}
+
+/// <summary>{{ev.title}} (v{{ev.version}}, топик {{ev.topic}}). {{ev.description}}</summary>
+public sealed record {{ev.name}}Payload({% for p in ev.payload %}{{payload_type(p)}} {{pascal(p.name)}}{% if not loop.last %}, {% endif %}{% endfor %}) : IEventPayload;
+{% endfor %}
+
+/// <summary>Метаданные события: тип, версия, топик, ключ партиционирования, шаблон уведомления.</summary>
+public sealed record EventMeta(string Name, string Title, int Version, string Topic, string KeyField, string? Notify, string? RecipientField);
+
+/// <summary>Каталог событий (из IR). Схемы задокументированы в docs/asyncapi.yaml.</summary>
+public static class EventCatalog
+{
+    private static readonly Dictionary<Type, EventMeta> ByType = new()
+    {
+{% for ev in spec.events %}
+        [typeof({{ev.name}}Payload)] = new("{{ev.name}}", {{cs_string(ev.title)}}, {{ev.version}}, "{{ev.topic}}", "{{ev.key_field}}", {{cs_string(ev.notify) if ev.notify else "null"}}, {{cs_string(ev.recipient_field) if ev.recipient_field else "null"}}),
+{% endfor %}
+    };
+
+    public static IReadOnlyCollection<EventMeta> All => ByType.Values;
+
+    public static string[] Topics => ByType.Values.Select(m => m.Topic).Distinct().ToArray();
+
+    public static EventMeta Get<T>() where T : IEventPayload =>
+        ByType.TryGetValue(typeof(T), out var meta) ? meta : throw new InvalidOperationException($"Event {typeof(T).Name} is not registered");
+}

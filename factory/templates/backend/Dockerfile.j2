@@ -1,0 +1,23 @@
+# syntax=docker/dockerfile:1
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+COPY Directory.Build.props Directory.Packages.props {{N}}.slnx ./
+COPY src/{{N}}.Domain/{{N}}.Domain.csproj src/{{N}}.Domain/
+COPY src/{{N}}.Application/{{N}}.Application.csproj src/{{N}}.Application/
+COPY src/{{N}}.Infrastructure/{{N}}.Infrastructure.csproj src/{{N}}.Infrastructure/
+COPY src/{{N}}.Api/{{N}}.Api.csproj src/{{N}}.Api/
+RUN --mount=type=cache,target=/root/.nuget/packages dotnet restore src/{{N}}.Api/{{N}}.Api.csproj
+COPY src/ src/
+RUN --mount=type=cache,target=/root/.nuget/packages dotnet publish src/{{N}}.Api/{{N}}.Api.csproj -c Release -o /app --no-restore
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
+WORKDIR /app
+COPY --from=build /app .
+COPY seed-data/ /app/seed-data/
+ENV ASPNETCORE_HTTP_PORTS=8080 \
+    Seed__DataDir=/app/seed-data
+EXPOSE 8080
+USER $APP_UID
+HEALTHCHECK --interval=10s --timeout=3s --start-period=40s --retries=10 \
+  CMD bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf "GET /health/ready HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && grep -q "200 OK" <&3'
+ENTRYPOINT ["dotnet", "{{N}}.Api.dll"]

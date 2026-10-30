@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "factory-ui",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "cd factory && uv run factory serve"],
+      "port": 8000
+    }
+  ]
+}

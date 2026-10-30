@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+COPY Mocks.csproj ./
+RUN --mount=type=cache,target=/root/.nuget/packages dotnet restore
+COPY . .
+RUN --mount=type=cache,target=/root/.nuget/packages dotnet publish -c Release -o /app --no-restore
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
+WORKDIR /app
+COPY --from=build /app .
+ENV ASPNETCORE_HTTP_PORTS=8080
+EXPOSE 8080
+USER $APP_UID
+HEALTHCHECK --interval=10s --timeout=3s --retries=10 \
+  CMD bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf "GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && grep -q "200 OK" <&3'
+ENTRYPOINT ["dotnet", "Mocks.dll"]

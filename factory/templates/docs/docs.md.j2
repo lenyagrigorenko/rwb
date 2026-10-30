@@ -1,0 +1,240 @@
+{# Набор небольших документов; генератор рендерит блок по имени. #}
+{% macro product() %}
+# Продуктовое описание: {{spec.product_name}}
+
+## Проблема и ценность
+
+{{a.summary}}
+
+## Цели
+
+{% for g in a.goals %}
+- {{g}}
+{% endfor %}
+
+## Пользователи
+
+{% for r in spec.roles %}
+- **{{r.title}}** — {{r.description}}
+{% endfor %}
+
+## Возможности
+
+{% for fr in a.functional %}
+- {{fr.text}} ({{fr.id}})
+{% endfor %}
+
+## Интеграции
+
+{% for i in a.integrations %}
+- {{i}}
+{% endfor %}
+
+## Что дальше
+
+Прототип предназначен для проверки бизнес-гипотезы и может развиваться продуктовой командой: модель приложения
+(`spec.yaml`) позволяет перегенерировать согласованные изменения, а код разделён на слои и снабжён тестами.
+{% endmacro %}
+
+{% macro architecture() %}
+# Архитектура: {{spec.product_name}}
+
+## Контейнеры
+
+```mermaid
+flowchart LR
+  user[Пользователь {{ admin_roles | join('/') }}] --> web[Web: Angular + Material<br/>nginx :8088]
+{% if spec.has_mobile %}
+  mobile[Android-приложение<br/>Kotlin + Compose] --> api
+{% endif %}
+  web -->|/api| api[Backend API<br/>ASP.NET Core .NET 10 :8080]
+  api --> db[(PostgreSQL 17 + PostGIS)]
+{% if spec.events %}
+  api -->|outbox → produce| kafka[[Kafka]]
+  kafka -->|consume| api
+{% endif %}
+{% if spec.integrations %}
+  api -->|HTTP адаптер| mocks[Mock-сервис<br/>{{ spec.integrations | map(attribute='real_system') | join(', ') }}]
+{% endif %}
+```
+
+## Слои backend
+
+| Проект | Ответственность |
+|---|---|
+| `{{spec.namespace}}.Domain` | Сущности и перечисления предметной области |
+| `{{spec.namespace}}.Application` | Сервисы сущностей (CRUD + права), бизнес-операции, фоновые задачи, контракты событий и интеграций |
+| `{{spec.namespace}}.Infrastructure` | EF Core + Npgsql/NetTopologySuite, SQL-миграции, импорт данных, геопоиск, outbox → Kafka, адаптеры |
+| `{{spec.namespace}}.Api` | Контроллеры REST, JWT, ограничение частоты, идемпотентность, ProblemDetails, OpenAPI, демо-режим |
+| `{{spec.namespace}}.Tests` | Модульные и интеграционные тесты (xUnit, Testcontainers с PostGIS) |
+
+## Ключевые решения
+
+| Решение | Обоснование |
+|---|---|
+| Единая модель приложения (IR) | Документация, API, БД и код согласованы по построению |
+| SQL-миграции, встроенные в сборку | Прозрачная схема, применение при старте под advisory lock, без отдельного инструмента |
+| Transactional outbox | Событие сохраняется в одной транзакции с изменением; доставка в Kafka at-least-once |
+| Идемпотентный консьюмер | Повторы сообщений не создают дублей (ключ — id события) |
+| Геопоиск в PostGIS по geography | Расстояния в метрах, GIST-индексы по `geom::geography` |
+| Адаптер + mock для внешних систем | Замена поставщика без изменения бизнес-логики |
+| `TimeProvider` со сдвигом | Детерминированные тесты и ускоренный демо-сценарий для событий по времени |
+| Метаданные экранов из IR | Web-интерфейс строго на компонентах Angular Material, проверяется линтером UI Kit |
+
+## Безопасность
+
+JWT (HS256, ключ из переменных окружения), ролевая модель и права на уровне записей (`*_own`), ограничение частоты
+запросов, идемпотентность критичных операций, единый формат ошибок без утечки деталей, секреты не хранятся в репозитории.
+{% endmacro %}
+
+{% macro runbook() %}
+# Инструкция по запуску
+
+## Требования
+
+- Docker 24+ и Docker Compose v2; 4 ГБ свободной памяти.
+- Порты 8088 (web), 8080 (API), 5432 (БД){% if spec.integrations %}, 8081 (mock-сервис){% endif %}.
+
+## Запуск из чистого окружения
+
+```bash
+git clone <репозиторий> && cd {{spec.slug}}
+cp .env.example .env          # при необходимости измените пароли и порты
+docker compose up -d --build  # сборка, миграции, загрузка тестовых данных
+docker compose ps             # все сервисы в состоянии healthy
+```
+
+При старте backend автоматически: дожидается БД, применяет миграции (`backend/src/{{spec.namespace}}.Infrastructure/Persistence/Migrations`),
+создаёт демо-пользователей{% if spec.datasets %}, импортирует данные ({{ spec.datasets | map(attribute='file') | join(', ') }}){% endif %} и синтетические записи.
+
+## Проверка работоспособности
+
+```bash
+curl -f http://localhost:8080/health/ready
+./scripts/smoke.sh            # вход, списки сущностей, OpenAPI
+```
+
+## Переменные окружения
+
+| Переменная | Назначение | По умолчанию |
+|---|---|---|
+| `DB_PASSWORD` | Пароль PostgreSQL | `app-local-dev` |
+| `JWT_KEY` | Ключ подписи JWT (≥ 32 символов) | случайный при старте |
+| `DEMO_PASSWORD` | Пароль демо-пользователей | `Demo2026!` |
+| `WEB_PORT`, `API_PORT`, `DB_PORT` | Порты на хосте | 8088, 8080, 5432 |
+
+## Остановка и сброс данных
+
+```bash
+docker compose down        # остановить
+docker compose down -v     # остановить и удалить данные БД
+```
+{% endmacro %}
+
+{% macro user_guide() %}
+# Руководство пользователя
+
+Вход: откройте http://localhost:8088, введите логин и пароль (демо-учётные записи показаны на экране входа).
+
+{% for r in spec.roles %}
+## {{r.title}}
+
+{{r.description}}
+
+Доступные разделы:
+{% for e in spec.entities %}{% set acts = spec.actions(r.name, e.name) %}{% if acts %}
+- **{{e.title_plural}}** — {% if 'read' in acts %}просмотр всех записей{% elif 'read_own' in acts %}просмотр своих записей{% endif %}{% if 'create' in acts %}, создание{% endif %}{% if 'update' in acts or 'update_own' in acts %}, изменение{% endif %}{% if 'delete' in acts %}, удаление{% endif %}.
+{% endif %}{% endfor %}
+{% for s in spec.screens if r.name in s.roles %}
+- Экран **«{{s.title}}»** ({{ 'мобильное приложение' if s.platform == 'mobile' else 'web' }}): {{ s.widgets | map(attribute='title') | join(', ') }}.
+{% endfor %}
+{% for op in spec.operations if r.name in op.roles %}
+- Действие **«{{op.title}}»**: {{op.description}}
+{% endfor %}
+
+{% endfor %}
+## Работа со списками
+
+Поиск — поле «Поиск»; фильтры — выпадающие списки над таблицей; сортировка — щелчок по заголовку столбца;
+открыть запись — щелчок по строке. Пустые списки, загрузка, ошибки и отсутствие прав отображаются отдельными
+состояниями с пояснением. Ошибки ввода подсвечиваются у полей формы.
+
+{% if spec.demo %}
+## Демонстрационный сценарий
+
+Раздел «Демо-сценарий» (роль {{ admin_roles | join(', ') }}): кнопка «Запустить» выполняет шаги:
+{% for st in spec.demo.steps %}
+{{loop.index}}. {{st.title}}
+{% endfor %}
+Кнопка «+10 мин» сдвигает часы приложения, чтобы наступили события по времени.
+{% endif %}
+{% endmacro %}
+
+{% macro dev_guide() %}
+# Руководство по дальнейшей разработке
+
+## Структура
+
+- `spec.yaml` — модель приложения. Изменения предметной области вносятся сюда и перегенерируются конвейером
+  (`factory regenerate`), что сохраняет согласованность документации, API, БД и кода.
+- `backend/src/{{spec.namespace}}.Application/Operations` — бизнес-операции (тело метода написано агентом-программистом,
+  можно дорабатывать вручную), `Jobs` — фоновые задачи, `Services` — CRUD с правами.
+- `backend/src/{{spec.namespace}}.Infrastructure/Persistence/Migrations` — SQL-миграции: новая миграция — новый файл `V002__*.sql`.
+- `frontend/src/app/generated/app-spec.ts` — метаданные экранов; компоненты в `features/` универсальны.
+
+## Локальная разработка
+
+```bash
+docker compose up -d db{% if spec.events %} kafka{% endif %}{% if spec.integrations %} mocks{% endif %}
+
+cd backend && dotnet run --project src/{{spec.namespace}}.Api      # API на :5000/:8080
+cd frontend && npm ci && npm start                    # http://localhost:4200, прокси /api → :8080
+```
+
+## Тесты
+
+```bash
+cd backend && dotnet test                                   # модульные + интеграционные (нужен Docker)
+dotnet test --filter "Category!=Integration"                # без Docker
+cd frontend && npm run lint:uikit                           # соответствие UI Kit
+```
+
+## Соглашения
+
+- Ошибки — исключения из `Application/Common` (преобразуются в ProblemDetails).
+- Время — только через `TimeProvider` (`clock.GetUtcNow()`).
+- События — `IEventPublisher.Publish(...)` до `SaveChangesAsync`, схема в `docs/asyncapi.yaml`, версия в каталоге событий.
+- Новые внешние системы — интерфейс в `Application/Integrations` + адаптер в Infrastructure + ответ в `mocks/mocks.json`.
+{% endmacro %}
+
+{% macro limitations() %}
+# Известные ограничения
+
+{% if defects %}
+## Требуют доработки
+
+{% for d in defects %}
+- {{d}}
+{% endfor %}
+{% endif %}
+
+## Ограничения прототипа
+
+{% for i in spec.integrations %}
+- «{{i.title}}» работает через mock-сервис, промышленная интеграция с {{i.real_system}} не выполнялась.
+{% endfor %}
+- Ключ JWT по умолчанию генерируется при старте: после перезапуска backend нужно войти заново (задайте `JWT_KEY`).
+- Демо-режим сдвигает часы приложения; используйте его только на тестовом стенде.
+- Kafka развёрнута в одном экземпляре (replication factor 1) — для промышленной эксплуатации нужен кластер.
+{% for x in a.assumptions %}
+- Допущение: {{x}}
+{% endfor %}
+{% if spec_warnings %}
+
+## Замечания проверки модели
+
+{% for w in spec_warnings %}
+- {{w}}
+{% endfor %}
+{% endif %}
+{% endmacro %}

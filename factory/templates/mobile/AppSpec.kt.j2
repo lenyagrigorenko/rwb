@@ -1,0 +1,59 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}. Изменения вносятся в спецификацию.
+package app.mobile
+
+data class FieldSpec(val name: String, val title: String, val type: String, val required: Boolean = false, val enumTitles: Map<String, String> = emptyMap())
+
+data class EntitySpec(val name: String, val title: String, val titlePlural: String, val route: String, val labelField: String, val fields: List<FieldSpec>, val geo: Boolean)
+
+data class OperationSpec(val name: String, val title: String, val method: String, val path: String, val inputs: List<FieldSpec>, val outputs: List<FieldSpec>)
+
+data class WidgetSpec(val type: String, val title: String, val entity: String? = null, val operation: String? = null, val field: String? = null, val layers: List<String> = emptyList())
+
+data class ScreenSpec(val name: String, val title: String, val roles: List<String>, val widgets: List<WidgetSpec>)
+
+object AppSpec {
+    const val PRODUCT = {{ ks(spec.product_name) }}
+    val MAP_CENTER = Pair({{spec.map_center[0]}}, {{spec.map_center[1]}})
+    val roles = mapOf({% for r in spec.roles %}{{ ks(r.name) }} to {{ ks(r.title) }}{% if not loop.last %}, {% endif %}{% endfor %})
+    val demoLogins = listOf({% for r in mobile_roles %}{{ ks(r.demo_login) }}{% if not loop.last %}, {% endif %}{% endfor %})
+
+    val entities = listOf(
+{% for e in spec.entities %}
+        EntitySpec({{ ks(e.name) }}, {{ ks(e.title) }}, {{ ks(e.title_plural) }}, {{ ks(route(e)) }}, {{ ks(e.label_field) }}, listOf(
+{% for f in e.fields %}
+            FieldSpec({{ ks(f.name) }}, {{ ks(f.title) }}, {{ ks(f.type) }}, {{ 'true' if f.required else 'false' }}{% if f.enum_titles %}, mapOf({% for k, v in f.enum_titles.items() %}{{ ks(k) }} to {{ ks(v) }}{% if not loop.last %}, {% endif %}{% endfor %}){% endif %}),
+{% endfor %}
+        ), {{ 'true' if e.geo_fields else 'false' }}),
+{% endfor %}
+    )
+
+    val operations = mapOf(
+{% for op in spec.operations %}
+        {{ ks(op.name) }} to OperationSpec({{ ks(op.name) }}, {{ ks(op.title) }}, {{ ks(op.method) }}, {{ ks('/api/v1' + op.path) }},
+            listOf({% for f in op.input %}FieldSpec({{ ks(f.name) }}, {{ ks(f.title) }}, {{ ks(f.type) }}, {{ 'true' if f.required else 'false' }}){% if not loop.last %}, {% endif %}{% endfor %}),
+            listOf({% for f in op.output %}FieldSpec({{ ks(f.name) }}, {{ ks(f.title) }}, {{ ks(f.type) }}){% if not loop.last %}, {% endif %}{% endfor %})),
+{% endfor %}
+    )
+
+    val screens = listOf(
+{% for s in mobile_screens %}
+        ScreenSpec({{ ks(s.name) }}, {{ ks(s.title) }}, listOf({% for r in s.roles %}{{ ks(r) }}{% if not loop.last %}, {% endif %}{% endfor %}), listOf(
+{% for w in s.widgets %}
+            WidgetSpec({{ ks(w.type) }}, {{ ks(w.title) }}, {{ ks(w.entity) if w.entity else 'null' }}, {{ ks(w.operation) if w.operation else 'null' }}, {{ ks(w.field) if w.field else 'null' }}, listOf({% for l in (w.props.get('layers') or []) %}{{ ks(l) }}{% if not loop.last %}, {% endif %}{% endfor %})),
+{% endfor %}
+        )),
+{% endfor %}
+    )
+
+    private val paramAliases = mapOf(
+{% for e in spec.entities %}{% for a in id_aliases(e) %}
+        {{ ks(a) }} to {{ ks(e.name) }},
+{% endfor %}{% endfor %}
+    )
+
+    fun entity(name: String): EntitySpec? = entities.firstOrNull { it.name == name }
+
+    fun entityForParam(param: String): EntitySpec? = paramAliases[param]?.let { entity(it) }
+
+    fun screensFor(role: String?): List<ScreenSpec> = screens.filter { role != null && role in it.roles }.ifEmpty { screens }
+}

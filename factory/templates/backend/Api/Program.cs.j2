@@ -1,0 +1,128 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json.Serialization;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.IdentityModel.Tokens;
+using Scalar.AspNetCore;
+using {{N}}.Api.Demo;
+using {{N}}.Api.Infrastructure;
+using {{N}}.Application;
+using {{N}}.Application.Abstractions;
+using {{N}}.Infrastructure;
+using {{N}}.Infrastructure.Persistence;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Logging.ClearProviders();
+builder.Logging.AddJsonConsole(o =>
+{
+    o.IncludeScopes = true;
+    o.TimestampFormat = "O";
+});
+
+// JWT key: from configuration (Jwt__Key) or an ephemeral random key, so no secret is stored in the repository.
+var jwtKey = builder.Configuration["Jwt:Key"];
+if (string.IsNullOrWhiteSpace(jwtKey) || jwtKey.Length < 32)
+{
+    jwtKey = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48));
+    builder.Configuration["Jwt:Key"] = jwtKey;
+    Console.WriteLine("WARN: Jwt:Key is not configured, using an ephemeral key (tokens reset on restart)");
+}
+
+builder.Services.AddControllers(o => o.ModelMetadataDetailsProviders.Add(new Microsoft.AspNetCore.Mvc.ModelBinding.Metadata.SystemTextJsonValidationMetadataProvider())).AddJsonOptions(o =>
+{
+    o.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+});
+builder.Services.Configure<ApiBehaviorOptions>(o => o.InvalidModelStateResponseFactory = ctx =>
+{
+    var problem = new ValidationProblemDetails(ctx.ModelState)
+    {
+        Status = StatusCodes.Status400BadRequest,
+        Title = "Ошибка валидации",
+        Type = "https://httpstatuses.io/400",
+        Instance = ctx.HttpContext.Request.Path,
+    };
+    problem.Extensions["code"] = "validation";
+    problem.Extensions["traceId"] = ctx.HttpContext.TraceIdentifier;
+    return new BadRequestObjectResult(problem) { ContentTypes = { "application/problem+json" } };
+});
+builder.Services.AddProblemDetails();
+builder.Services.AddExceptionHandler<AppExceptionHandler>();
+builder.Services.AddOpenApi(o => o.AddDocumentTransformer((doc, _, _) =>
+{
+    doc.Info.Title = "{{spec.product_name}} API";
+    doc.Info.Version = "v1";
+    doc.Info.Description = "REST API. Аутентификация: Bearer JWT (POST /api/v1/auth/login). Ошибки: application/problem+json. Версия API в пути: /api/v1.";
+    return Task.CompletedTask;
+}));
+
+builder.Services.AddApplication();
+builder.Services.AddInfrastructure(builder.Configuration);
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<ICurrentUser, CurrentUser>();
+builder.Services.AddSingleton<JwtTokenService>();
+builder.Services.AddSingleton<DemoScenarioRunner>();
+builder.Services.AddHttpClient("self", c => c.BaseAddress = new Uri(builder.Configuration["Demo:SelfUrl"] ?? "http://localhost:8080/"));
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(o =>
+{
+    o.MapInboundClaims = false;
+    o.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidateIssuer = true,
+        ValidIssuer = JwtTokenService.Issuer,
+        ValidateAudience = true,
+        ValidAudience = JwtTokenService.Issuer,
+        ValidateIssuerSigningKey = true,
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
+        ValidateLifetime = true,
+        RoleClaimType = "role",
+        NameClaimType = "name",
+    };
+});
+builder.Services.AddAuthorization();
+builder.Services.AddRateLimiter(o =>
+{
+    o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    o.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ctx.User.FindFirst("sub")?.Value ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "anonymous",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 1200, Window = TimeSpan.FromMinutes(1) }));
+    o.AddFixedWindowLimiter("login", x =>
+    {
+        x.PermitLimit = 30;
+        x.Window = TimeSpan.FromMinutes(1);
+    });
+});
+builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
+    .WithOrigins((builder.Configuration["Cors:Origins"] ?? "http://localhost:4200").Split(',', StringSplitOptions.RemoveEmptyEntries))
+    .AllowAnyHeader()
+    .AllowAnyMethod()
+    .WithExposedHeaders("X-Correlation-Id")));
+builder.Services.AddHealthChecks().AddDbContextCheck<AppDbContext>("database", tags: ["ready"]);
+
+var app = builder.Build();
+
+await app.Services.InitializeDatabaseAsync();
+
+app.UseExceptionHandler();
+app.UseMiddleware<CorrelationIdMiddleware>();
+app.UseCors();
+app.UseAuthentication();
+app.UseRateLimiter();
+app.UseAuthorization();
+app.UseMiddleware<IdempotencyMiddleware>();
+
+app.MapOpenApi();
+app.MapScalarApiReference();
+app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
+app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = c => c.Tags.Contains("ready") });
+app.MapControllers();
+
+app.Run();
+
+/// <summary>Точка входа (partial для WebApplicationFactory в тестах).</summary>
+public partial class Program;

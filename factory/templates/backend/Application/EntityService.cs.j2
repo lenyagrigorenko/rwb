@@ -1,0 +1,217 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using Microsoft.EntityFrameworkCore;
+using NetTopologySuite.Geometries;
+using {{N}}.Application.Abstractions;
+using {{N}}.Application.Common;
+using {{N}}.Application.Dtos;
+using {{N}}.Application.Events;
+using {{N}}.Domain.Entities;
+
+namespace {{N}}.Application.Services;
+
+/// <summary>{{e.title}}: CRUD, права доступа{% if e.lifecycle %}, жизненный цикл{% endif %}. Покрывает: {{ e.covers | join(', ') }}</summary>
+public sealed class {{e.name}}Service(IAppDbContext db, ICurrentUser user, TimeProvider clock, IEventPublisher events)
+{
+    private const string Entity = "{{e.name}}";
+
+    /// <summary>Записи, видимые текущему пользователю (с учётом read / read_own).</summary>
+    public IQueryable<{{e.name}}> Visible()
+    {
+        if (Permissions.Can(user.Role, Entity, "read")) return db.{{vm.set}};
+{% if e.owner_field %}
+        if (Permissions.Can(user.Role, Entity, "read_own"))
+        {
+            var uid = user.RequireUserId();
+            return db.{{vm.set}}.Where(x => x.{{vm.Owner}} == uid);
+        }
+{% endif %}
+        throw new ForbiddenException();
+    }
+
+    public async Task<PagedResult<{{e.name}}Dto>> ListAsync(ListQuery q, {{e.name}}Filter f, CancellationToken ct)
+    {
+        var query = Visible().AsNoTracking();
+{% for ff in vm.filter_fields %}
+        if (f.{{ff.Name}} is not null) query = query.Where(x => x.{{ff.Name}} == f.{{ff.Name}});
+{% endfor %}
+{% if vm.search_fields %}
+        if (!string.IsNullOrWhiteSpace(q.Q))
+        {
+            var term = "%" + q.Q.Trim() + "%";
+            query = query.Where(x => {% for sf in vm.search_fields %}(x.{{sf}} != null && EF.Functions.ILike(x.{{sf}}, term)){% if not loop.last %} || {% endif %}{% endfor %});
+        }
+{% endif %}
+        var desc = string.Equals(q.Dir, "desc", StringComparison.OrdinalIgnoreCase);
+        query = q.Sort switch
+        {
+{% for sf in vm.sort_fields %}
+            "{{sf.name}}" => desc ? query.OrderByDescending(x => x.{{sf.Name}}) : query.OrderBy(x => x.{{sf.Name}}),
+{% endfor %}
+            "createdAt" => desc ? query.OrderByDescending(x => x.CreatedAt) : query.OrderBy(x => x.CreatedAt),
+            _ => query.OrderByDescending(x => x.CreatedAt),
+        };
+        var page = Math.Max(1, q.Page);
+        var size = Math.Clamp(q.PageSize, 1, 500);
+        var total = await query.CountAsync(ct);
+        var items = await query.Skip((page - 1) * size).Take(size).ToListAsync(ct);
+        var labels = await LoadLabelsAsync(items, ct);
+        return new PagedResult<{{e.name}}Dto>(items.Select(x => {{e.name}}Dto.From(x, labels[x.Id])).ToList(), total, page, size);
+    }
+
+    /// <summary>Запись по id с проверкой доступа; иначе 404.</summary>
+    public async Task<{{e.name}}> GetAccessibleAsync(Guid id, CancellationToken ct) =>
+        await Visible().FirstOrDefaultAsync(x => x.Id == id, ct)
+        ?? throw new NotFoundException("{{e.title}} не найден(а)");
+
+    public async Task<{{e.name}}Dto> GetAsync(Guid id, CancellationToken ct)
+    {
+        var entity = await GetAccessibleAsync(id, ct);
+        var labels = await LoadLabelsAsync([entity], ct);
+        return {{e.name}}Dto.From(entity, labels[entity.Id]);
+    }
+
+    public async Task<{{e.name}}Dto> CreateAsync({{e.name}}UpsertRequest r, CancellationToken ct)
+    {
+        if (!Permissions.Can(user.Role, Entity, "create")) throw new ForbiddenException();
+        var now = clock.GetUtcNow();
+        var entity = new {{e.name}} { CreatedAt = now, UpdatedAt = now };
+        await ApplyAsync(entity, r, ct);
+{% for a in vm.autonumber %}
+        if (string.IsNullOrEmpty(entity.{{a.Name}})) entity.{{a.Name}} = AutoNumber.Next("{{a.prefix}}", {{a.max}});
+{% endfor %}
+{% if e.owner_field %}
+        if (!Permissions.Can(user.Role, Entity, "read")) entity.{{vm.Owner}} = user.RequireUserId();
+{% endif %}
+{% if e.lifecycle %}
+        entity.{{vm.Lifecycle}} = {{vm.lifecycle_enum}}.{{e.lifecycle.initial}};
+{% endif %}
+        db.{{vm.set}}.Add(entity);
+        await db.SaveChangesAsync(ct);
+        return await GetAsync(entity.Id, ct);
+    }
+
+    public async Task<{{e.name}}Dto> UpdateAsync(Guid id, {{e.name}}UpsertRequest r, CancellationToken ct)
+    {
+        var entity = await GetAccessibleAsync(id, ct);
+        var allowed = Permissions.Can(user.Role, Entity, "update"){% if e.owner_field %}
+            || (Permissions.Can(user.Role, Entity, "update_own") && entity.{{vm.Owner}} == user.UserId){% endif %};
+        if (!allowed) throw new ForbiddenException();
+        await ApplyAsync(entity, r, ct);
+        entity.UpdatedAt = clock.GetUtcNow();
+        await db.SaveChangesAsync(ct);
+        return await GetAsync(entity.Id, ct);
+    }
+
+    public async Task DeleteAsync(Guid id, CancellationToken ct)
+    {
+        if (!Permissions.Can(user.Role, Entity, "delete")) throw new ForbiddenException();
+        var entity = await GetAccessibleAsync(id, ct);
+        db.{{vm.set}}.Remove(entity);
+        await db.SaveChangesAsync(ct);
+    }
+{% if e.lifecycle %}
+
+    /// <summary>Переход жизненного цикла по имени действия.</summary>
+    public async Task<{{e.name}}Dto> TransitionAsync(Guid id, string action, CancellationToken ct)
+    {
+        var entity = await GetAccessibleAsync(id, ct);
+        switch (action)
+        {
+{% for t in e.lifecycle.transitions %}
+            case "{{t.name}}":
+                if (user.Role is not ({% for r in t.roles %}"{{r}}"{% if not loop.last %} or {% endif %}{% endfor %})) throw new ForbiddenException();
+                if (entity.{{vm.Lifecycle}} is not ({% for s in t.from_states %}{{vm.lifecycle_enum}}.{{s}}{% if not loop.last %} or {% endif %}{% endfor %}))
+                    throw new BusinessRuleException($"Действие «{{t.title}}» недоступно в статусе {entity.{{vm.Lifecycle}}}");
+                entity.{{vm.Lifecycle}} = {{vm.lifecycle_enum}}.{{t.to}};
+{% if t.emits and vm.transition_payloads.get(t.name) %}
+                events.Publish(new {{t.emits}}Payload({{vm.transition_payloads[t.name]}}), entity.Id);
+{% endif %}
+                break;
+{% endfor %}
+            default:
+                throw new NotFoundException($"Неизвестное действие: {action}");
+        }
+        entity.UpdatedAt = clock.GetUtcNow();
+        await db.SaveChangesAsync(ct);
+        return await GetAsync(entity.Id, ct);
+    }
+{% endif %}
+{% if vm.geo %}
+
+    /// <summary>GeoJSON FeatureCollection для карты; bbox = minLon,minLat,maxLon,maxLat.</summary>
+    public async Task<string> GeoJsonAsync(string? bbox, CancellationToken ct)
+    {
+        var query = Visible().AsNoTracking().Where(x => x.{{vm.geo.Name}} != null);
+        var parts = (bbox ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 4 && parts.All(p => double.TryParse(p, System.Globalization.CultureInfo.InvariantCulture, out _)))
+        {
+            var v = parts.Select(p => double.Parse(p, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+            var area = new GeometryFactory(new PrecisionModel(), 4326).ToGeometry(new Envelope(v[0], v[2], v[1], v[3]));
+            query = query.Where(x => x.{{vm.geo.Name}}!.Intersects(area));
+        }
+        var rows = await query.Take(20000).ToListAsync(ct);
+        var features = new JsonArray();
+        foreach (var x in rows)
+        {
+            features.Add(new JsonObject
+            {
+                ["type"] = "Feature",
+                ["id"] = x.Id.ToString(),
+                ["geometry"] = JsonNode.Parse(JsonSerializer.Serialize<Geometry>(x.{{vm.geo.Name}}!, GeoJson.Options)),
+                ["properties"] = new JsonObject
+                {
+                    ["id"] = x.Id.ToString(),
+                    ["label"] = JsonValue.Create({{vm.label_expr}}),
+{% for pf in vm.geo_props %}
+                    ["{{pf.name}}"] = JsonValue.Create({{pf.expr}}),
+{% endfor %}
+                },
+            });
+        }
+        return new JsonObject { ["type"] = "FeatureCollection", ["features"] = features }.ToJsonString();
+    }
+{% endif %}
+
+    private async Task ApplyAsync({{e.name}} entity, {{e.name}}UpsertRequest r, CancellationToken ct)
+    {
+{% for f in vm.upsert_fields %}
+{% if f.unique %}
+        if (r.{{f.Name}} is not null && await db.{{vm.set}}.AnyAsync(x => x.{{f.Name}} == r.{{f.Name}} && x.Id != entity.Id, ct))
+            throw new ConflictException("{{e.title}} со значением «{{f.title}}» = " + r.{{f.Name}} + " уже существует");
+{% endif %}
+{% if f.ref_set %}
+        if (r.{{f.Name}} is not null && !await db.{{f.ref_set}}.AnyAsync(x => x.Id == r.{{f.Name}}, ct))
+            throw ValidationException.For("{{f.name}}", "Связанный объект «{{f.title}}» не найден");
+{% endif %}
+{% if f.geo_required %}
+        var {{f.name}}Geometry = GeoJson.FromJson(r.{{f.Name}}) ?? throw ValidationException.For("{{f.name}}", "Поле «{{f.title}}» обязательно");
+{% endif %}
+{% endfor %}
+{% for f in vm.upsert_fields %}
+        entity.{{f.Name}} = {{f.to_entity}};
+{% endfor %}
+    }
+
+    private async Task<Dictionary<Guid, IReadOnlyDictionary<string, string?>>> LoadLabelsAsync(IReadOnlyList<{{e.name}}> items, CancellationToken ct)
+    {
+        var result = items.ToDictionary(x => x.Id, _ => (IReadOnlyDictionary<string, string?>)new Dictionary<string, string?>());
+{% for rf in vm.ref_fields %}
+        var {{rf.name}}Ids = items.Select(x => (Guid?)x.{{rf.Name}}).Where(id => id.HasValue).Select(id => id!.Value).Distinct().ToList();
+        var {{rf.name}}Labels = {{rf.name}}Ids.Count == 0 ? new Dictionary<Guid, string?>()
+            : await db.{{rf.ref_set}}.AsNoTracking().Where(x => {{rf.name}}Ids.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => (string?)({{rf.label_expr}}), ct);
+{% endfor %}
+{% if vm.ref_fields %}
+        foreach (var x in items)
+        {
+            var d = (Dictionary<string, string?>)result[x.Id];
+{% for rf in vm.ref_fields %}
+            if (((Guid?)x.{{rf.Name}}) is { } {{rf.name}}Value && {{rf.name}}Labels.TryGetValue({{rf.name}}Value, out var {{rf.name}}Label)) d["{{rf.name}}"] = {{rf.name}}Label;
+{% endfor %}
+        }
+{% endif %}
+        await Task.CompletedTask;
+        return result;
+    }
+}

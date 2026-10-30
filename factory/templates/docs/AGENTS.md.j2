@@ -1,0 +1,13 @@
+# AGENTS.md — как развивать этот проект (для людей и ИИ-агентов)
+
+- Источник истины — `spec.yaml` (модель приложения). Новая сущность, поле, роль, операция или событие сначала
+  описываются там, затем проект перегенерируется конвейером — так документация, API, БД, UI и тесты остаются согласованными.
+- Бизнес-логика операций: `backend/src/{{spec.namespace}}.Application/Operations/*.cs` (метод `HandleAsync`),
+  фоновые задачи: `.../Jobs/*.cs`. Используйте сервисы сущностей (`GetAccessibleAsync` проверяет права),
+  `IEventPublisher` для событий, `IGeoService` для геопоиска, `TimeProvider` для времени.
+- Схема БД меняется только новой миграцией `Persistence/Migrations/V00N__описание.sql`.
+- Ошибки — исключения `Application/Common` (ValidationException, BusinessRuleException, NotFoundException, ForbiddenException).
+- Web-интерфейс строится по `frontend/src/app/generated/app-spec.ts`; разрешены только компоненты Angular Material
+  (`npm run lint:uikit`).
+- Перед коммитом: `dotnet test` в `backend/`, `npm run build` в `frontend/`.
+- Секреты — только через переменные окружения (`.env`, не коммитится).

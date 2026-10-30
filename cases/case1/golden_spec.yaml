@@ -1,0 +1,471 @@
+# Эталонный чертёж (IR) кейса 1. Написан вручную: по нему разрабатываются генераторы,
+# и с ним сравнивается то, что выдаёт Qwen.
+slug: spb-parking-assistant
+namespace: ParkingAssistant
+product_name: Помощник платной парковки СПб
+map_center: [59.9386, 30.3141]
+
+analysis:
+  product_name: Помощник платной парковки СПб
+  summary: >-
+    Мобильный помощник водителя служебного автомобиля и административная панель диспетчера.
+    Система по GPS определяет нахождение автомобиля в зоне платной парковки Санкт-Петербурга,
+    ведёт парковочную сессию, предупреждает об окончании оплаченного времени и о смене зоны,
+    передаёт водителя в официальный сервис оплаты. Оплата внутри системы не выполняется.
+  goals:
+    - Снизить число штрафов за неоплаченную парковку служебных автомобилей
+    - Исключить повторную оплату одной и той же зоны
+    - Дать диспетчеру прозрачную картину парковок автопарка в реальном времени
+  scope_in:
+    - Определение местоположения и зоны платной парковки
+    - Учёт парковочных сессий и контроль времени окончания
+    - Уведомления водителя
+    - Переход в официальный сервис оплаты через адаптер
+    - Административный web-интерфейс диспетчера
+    - Мобильное Android-приложение водителя
+  scope_out:
+    - Проведение платежей и собственный платёжный механизм
+    - Промышленная интеграция с «Паркоматикой» (используется mock-сервис)
+    - Распознавание номеров и фотофиксация
+  roles:
+    - name: Dispatcher
+      title: Диспетчер автопарка
+      description: Управляет автомобилями, видит все сессии, маршруты и события
+      demo_login: dispatcher
+    - name: Driver
+      title: Водитель
+      description: Работает только со своим автомобилем и своими сессиями
+      demo_login: driver
+  functional:
+    - {id: FR-001, text: Определять текущее местоположение автомобиля по GPS-точкам}
+    - {id: FR-002, text: Определять нахождение автомобиля в зоне платной парковки}
+    - {id: FR-003, text: Показывать номер и границы текущей зоны на карте}
+    - {id: FR-004, text: "Отображать параметры парковки: тариф, минимальное время, шаг оплаты, режим работы"}
+    - {id: FR-005, text: Хранить информацию об активной парковочной сессии}
+    - {id: FR-006, text: Отслеживать перемещение автомобиля и сохранять трек}
+    - {id: FR-007, text: Определять выход автомобиля из текущей зоны}
+    - {id: FR-008, text: Определять переход автомобиля в другую парковочную зону}
+    - {id: FR-009, text: Контролировать время окончания оплаченной сессии}
+    - {id: FR-010, text: Предупреждать водителя о необходимости проверки или новой оплаты, в том числе за 10 минут до окончания}
+    - {id: FR-011, text: Предоставлять переход к официальному сервису оплаты}
+    - {id: FR-012, text: Отображать маршрут и историю парковочных сессий}
+    - {id: FR-013, text: "Web-интерфейс: просмотр автомобилей, зон, активных сессий, маршрутов, событий и истории"}
+  non_functional:
+    - {id: NFR-001, text: Определение зоны по новой GPS-точке выполняется не дольше 500 мс}
+    - {id: NFR-002, text: Время в уведомлениях отображается в часовом поясе Europe/Moscow}
+    - {id: NFR-003, text: Все API защищены JWT-аутентификацией и ролевой авторизацией}
+    - {id: NFR-004, text: Запуск всего окружения одной командой docker compose up}
+    - {id: NFR-005, text: Интерфейсы на русском языке}
+  constraints:
+    - "Стек: Angular 20, ASP.NET Core (.NET 10), PostgreSQL 17 + PostGIS, Kotlin 2.2, Kafka, Docker"
+    - Реальная оплата не выполняется, интеграция с поставщиком — через адаптер и mock-сервис
+    - Источник зон — выгрузка spb_zones.json (6867 участков)
+  scenarios:
+    - id: SC-001
+      title: Въезд в зону и запуск сессии
+      actor: Водитель
+      steps:
+        - Автомобиль движется, приложение передаёт GPS-точки
+        - Система определяет зону и присылает уведомление «Вы въехали в зону платной парковки»
+        - Водитель видит номер зоны, тариф и минимальное время
+        - Водитель подтверждает парковочную сессию и переходит в сервис оплаты
+        - Система показывает «Парковка оплачена до ЧЧ:ММ»
+      alternatives:
+        - Автомобиль проезжает зону без остановки — сессия не создаётся
+    - id: SC-002
+      title: Окончание оплаченного времени
+      actor: Водитель
+      steps:
+        - За 10 минут до окончания приходит предупреждение
+        - После окончания сессия переходит в статус «Истекла»
+    - id: SC-003
+      title: Смена зоны
+      actor: Водитель
+      steps:
+        - Автомобиль покидает зону — уведомление «Вы покинули текущую парковочную зону»
+        - Автомобиль въезжает в другую зону — предложение проверить необходимость новой оплаты
+    - id: SC-004
+      title: Контроль диспетчером
+      actor: Диспетчер
+      steps:
+        - Диспетчер видит автомобили и зоны на карте
+        - Диспетчер просматривает активные сессии, маршруты, события и историю
+  integrations:
+    - Официальный сервис оплаты парковки (переход по ссылке)
+    - «Паркоматика» — поставщик данных о зонах и сессиях (mock-сервис + адаптер)
+  security:
+    - JWT-аутентификация, роли Dispatcher и Driver
+    - Водитель видит только свой автомобиль и свои сессии
+    - Ограничение частоты запросов, идемпотентность запуска сессии
+    - Секреты только в переменных окружения
+  acceptance:
+    - {id: AC-001, fr: FR-002, given: "Точка находится в 10 м от участка зоны 517641", when: "Водитель передаёт GPS-точку", then: "Текущей зоной автомобиля становится 517641 и создаётся событие ZoneEntered"}
+    - {id: AC-002, fr: FR-002, given: "Точка находится в 300 м от любой зоны", when: "Водитель передаёт GPS-точку", then: "Зона не определена, событие не создаётся"}
+    - {id: AC-003, fr: FR-005, given: "Автомобиль находится в зоне", when: "Водитель запускает сессию на 60 минут", then: "Создаётся активная сессия, paidUntil = now + 60 минут"}
+    - {id: AC-004, fr: FR-004, given: "Зона с минимальным временем 60 минут", when: "Водитель запускает сессию на 30 минут", then: "API возвращает 400 с понятной ошибкой валидации"}
+    - {id: AC-005, fr: FR-010, given: "Активная сессия до 15:20", when: "Наступает 15:10", then: "Сессия переходит в статус Expiring и водитель получает уведомление «До окончания парковки осталось 10 минут»"}
+    - {id: AC-006, fr: FR-007, given: "Автомобиль в зоне", when: "Следующая точка в 300 м от всех зон", then: "Создаётся событие ZoneLeft"}
+    - {id: AC-007, fr: FR-008, given: "Автомобиль в зоне A", when: "Следующая точка рядом с зоной B", then: "Создаётся событие ZoneChanged с предложением проверить оплату"}
+    - {id: AC-008, fr: FR-011, given: "Автомобиль в зоне", when: "Водитель запрашивает ссылку на оплату", then: "Возвращается URL официального сервиса с номером зоны"}
+    - {id: AC-009, fr: FR-012, given: "Автомобиль передал 5 точек", when: "Диспетчер запрашивает маршрут", then: "Возвращаются 5 точек в хронологическом порядке"}
+    - {id: AC-010, fr: FR-013, given: "Водитель A", when: "Запрашивает сессии водителя B", then: "Сессии водителя B не возвращаются"}
+  risks:
+    - Точность GPS 10–20 м при плотности участков (у 57% участков сосед ближе 25 м) — ложные смены зоны
+    - Режим работы зоны (пн–пт 08:00–20:00) есть только в текстовом описании, в структурированном тарифе дней недели нет
+    - Нет реального API оплаты — время окончания сессии подтверждается водителем, а не платёжной системой
+  ambiguities:
+    - id: Q-001
+      question: Оплата действует на конкретный участок (externalZoneId) или на более крупную зону, объединяющую участки?
+      impact: high
+      affects: [FR-002, FR-008]
+      options: [На участок externalZoneId, На группу участков с одинаковым тарифом]
+      default_answer: На участок externalZoneId — в данных нет более крупных зон
+      rationale: Определяет, когда показывать «Проверьте необходимость новой оплаты»
+    - id: Q-002
+      question: Действует ли тариф по выходным и праздникам?
+      impact: medium
+      affects: [FR-004, FR-009]
+      options: [Только будни 08:00–20:00 по описанию, Всегда]
+      default_answer: Будни 08:00–20:00 по тексту priceDescription, праздники бесплатно (hasHolidays=true)
+      rationale: Влияет на необходимость оплаты в момент въезда
+    - id: Q-003
+      question: Какой радиус считать нахождением в зоне, если зоны заданы линиями вдоль бордюра?
+      impact: medium
+      affects: [FR-002]
+      options: [15 м, 25 м, 40 м]
+      default_answer: 25 м от линии участка
+      rationale: Участки — LINESTRING, а не полигоны; точность GPS 10–20 м
+  assumptions:
+    - Сумма в данных хранится в копейках за час, duration — длительность действия льготного тарифа в минутах
+    - Водитель подтверждает сессию в приложении после оплаты во внешнем сервисе
+    - Один водитель закреплён за одним автомобилем
+    - Тип ТС (car/truck/bus) задаётся в карточке автомобиля и влияет на тариф
+  components: {web: true, mobile: true, kafka: true, geo: true}
+
+entities:
+  - name: Vehicle
+    title: Автомобиль
+    title_plural: Автомобили
+    description: Служебный автомобиль автопарка
+    display_field: plateNumber
+    owner_field: driverUserId
+    seed_count: 3
+    covers: [FR-001, FR-013]
+    fields:
+      - {name: plateNumber, title: Госномер, type: string, required: true, unique: true, max_length: 9, regex: "^[АВЕКМНОРСТУХ]\\d{3}[АВЕКМНОРСТУХ]{2}\\d{2,3}$", searchable: true, examples: [А123ВС178, К456МН98, Е789ОР198]}
+      - {name: model, title: Модель, type: string, max_length: 100, examples: [Lada Largus, ГАЗель Next, Renault Logan]}
+      - {name: vehicleType, title: Тип ТС, type: enum, enum_values: [car, truck, bus], enum_titles: {car: Легковой, truck: Грузовой, bus: Автобус}, required: true, default: car}
+      - {name: driverUserId, title: Водитель, type: ref, ref: User}
+      - {name: lastPosition, title: Последняя позиция, type: geo_point, list_visible: false, readonly: true}
+      - {name: lastSeenAt, title: Последняя активность, type: datetime, readonly: true}
+      - {name: currentZoneId, title: Текущая зона, type: ref, ref: ParkingZone, readonly: true}
+  - name: ParkingZone
+    title: Парковочная зона
+    title_plural: Парковочные зоны
+    description: Участок платной парковки из открытых данных Санкт-Петербурга
+    display_field: externalId
+    seed_count: 0
+    covers: [FR-003, FR-004]
+    fields:
+      - {name: externalId, title: Номер зоны, type: string, required: true, unique: true, max_length: 32, searchable: true}
+      - {name: name, title: Адрес, type: string, required: true, max_length: 255, searchable: true}
+      - {name: geometry, title: Границы, type: geometry, required: true, list_visible: false}
+      - {name: priceKopecksPerHour, title: Тариф, коп./час, type: int, min: 0}
+      - {name: priceDescription, title: Режим и тариф, type: text}
+      - {name: minDurationMinutes, title: Мин. время, мин, type: int, min: 0}
+      - {name: stepMinutes, title: Шаг оплаты, мин, type: int, min: 1}
+      - {name: tariff, title: Тариф (структура), type: json, list_visible: false}
+  - name: ParkingSession
+    title: Парковочная сессия
+    title_plural: Парковочные сессии
+    description: Период оплаченной стоянки автомобиля в зоне
+    owner_field: driverUserId
+    seed_count: 0
+    covers: [FR-005, FR-009, FR-012]
+    fields:
+      - {name: vehicleId, title: Автомобиль, type: ref, ref: Vehicle, required: true}
+      - {name: zoneId, title: Зона, type: ref, ref: ParkingZone, required: true}
+      - {name: driverUserId, title: Водитель, type: ref, ref: User}
+      - {name: startedAt, title: Начало, type: datetime, required: true}
+      - {name: paidUntil, title: Оплачено до, type: datetime, required: true}
+      - {name: durationMinutes, title: Длительность, мин, type: int, min: 1}
+      - {name: estimatedCostKopecks, title: Стоимость, коп., type: int, min: 0}
+      - {name: status, title: Статус, type: enum, enum_values: [Active, Expiring, Expired, Closed], enum_titles: {Active: Активна, Expiring: Скоро истечёт, Expired: Истекла, Closed: Завершена}, required: true, default: Active}
+    lifecycle:
+      field: status
+      initial: Active
+      transitions:
+        - {name: close, title: Завершить, from_states: [Active, Expiring, Expired], to: Closed, roles: [Driver, Dispatcher], emits: SessionClosed}
+  - name: TrackPoint
+    title: Точка маршрута
+    title_plural: Точки маршрута
+    description: GPS-точка, полученная от автомобиля
+    seed_count: 0
+    covers: [FR-001, FR-006, FR-012]
+    fields:
+      - {name: vehicleId, title: Автомобиль, type: ref, ref: Vehicle, required: true}
+      - {name: position, title: Координаты, type: geo_point, required: true, list_visible: false}
+      - {name: recordedAt, title: Время, type: datetime, required: true}
+      - {name: speedKmh, title: Скорость, км/ч, type: decimal, min: 0, max: 300}
+      - {name: zoneId, title: Зона, type: ref, ref: ParkingZone}
+
+permissions:
+  - {role: Dispatcher, entity: Vehicle, actions: [read, create, update, delete]}
+  - {role: Dispatcher, entity: ParkingZone, actions: [read, update]}
+  - {role: Dispatcher, entity: ParkingSession, actions: [read]}
+  - {role: Dispatcher, entity: TrackPoint, actions: [read]}
+  - {role: Driver, entity: Vehicle, actions: [read_own]}
+  - {role: Driver, entity: ParkingZone, actions: [read]}
+  - {role: Driver, entity: ParkingSession, actions: [read_own]}
+  - {role: Driver, entity: TrackPoint, actions: []}
+
+operations:
+  - id: OP-001
+    name: SubmitTrackPoint
+    title: Передать GPS-точку
+    description: >-
+      Сохранить точку трека автомобиля. Найти ближайшую ParkingZone в радиусе 25 м от точки.
+      Сравнить с текущей зоной автомобиля (currentZoneId): нет→есть — событие ZoneEntered;
+      есть→нет — ZoneLeft; есть→другая — ZoneChanged. Обновить у автомобиля lastPosition,
+      lastSeenAt, currentZoneId. Водитель может передавать точки только своего автомобиля.
+      Вернуть текущую зону (или null) и признак смены зоны.
+    method: POST
+    path: /vehicles/{vehicleId}/track
+    roles: [Driver, Dispatcher]
+    input:
+      - {name: lat, title: Широта, type: decimal, required: true, min: -90, max: 90}
+      - {name: lon, title: Долгота, type: decimal, required: true, min: -180, max: 180}
+      - {name: speedKmh, title: Скорость, type: decimal, min: 0, max: 300}
+    output:
+      - {name: zoneId, title: Зона, type: string}
+      - {name: zoneNumber, title: Номер зоны, type: string}
+      - {name: zoneChanged, title: Зона изменилась, type: bool}
+    emits: [ZoneEntered, ZoneLeft, ZoneChanged]
+    covers: [FR-001, FR-002, FR-006, FR-007, FR-008]
+  - id: OP-002
+    name: GetVehicleStatus
+    title: Текущий статус автомобиля
+    description: >-
+      Вернуть текущую зону автомобиля (номер, адрес, тариф в рублях за час, режим, минимальное
+      время, шаг оплаты), активную сессию (paidUntil, сколько минут осталось) и признак
+      paymentRequired = в зоне и нет активной сессии в этой зоне.
+    method: GET
+    path: /vehicles/{vehicleId}/status
+    roles: [Driver, Dispatcher]
+    output:
+      - {name: zoneId, title: Зона, type: string}
+      - {name: zoneNumber, title: Номер зоны, type: string}
+      - {name: zoneName, title: Адрес, type: string}
+      - {name: pricePerHourRub, title: Тариф, руб./час, type: decimal}
+      - {name: priceDescription, title: Режим, type: string}
+      - {name: minDurationMinutes, title: Мин. время, type: int}
+      - {name: stepMinutes, title: Шаг, type: int}
+      - {name: sessionId, title: Сессия, type: string}
+      - {name: paidUntil, title: Оплачено до, type: datetime}
+      - {name: minutesLeft, title: Осталось минут, type: int}
+      - {name: paymentRequired, title: Нужна оплата, type: bool}
+    covers: [FR-003, FR-004, FR-005, FR-009]
+  - id: OP-003
+    name: StartParkingSession
+    title: Запустить парковочную сессию
+    description: >-
+      Создать сессию для автомобиля в его текущей зоне. durationMinutes не меньше
+      minDurationMinutes зоны и кратно stepMinutes, иначе ошибка валидации. Если активная
+      сессия в этой же зоне уже есть — вернуть её (идемпотентно). paidUntil = now + duration,
+      стоимость по тарифу зоны и типу ТС. Событие SessionStarted.
+    method: POST
+    path: /vehicles/{vehicleId}/sessions
+    roles: [Driver, Dispatcher]
+    input:
+      - {name: durationMinutes, title: Длительность, мин, type: int, required: true, min: 15, max: 1440}
+    output_entity: ParkingSession
+    emits: [SessionStarted]
+    idempotent: true
+    covers: [FR-005, FR-009]
+  - id: OP-004
+    name: GetPaymentLink
+    title: Ссылка на оплату
+    description: >-
+      Получить у интеграции ParkingProvider ссылку на официальный сервис оплаты для текущей
+      зоны автомобиля и его госномера.
+    method: GET
+    path: /vehicles/{vehicleId}/payment-link
+    roles: [Driver, Dispatcher]
+    output:
+      - {name: url, title: Ссылка, type: url}
+      - {name: zoneNumber, title: Номер зоны, type: string}
+    covers: [FR-011]
+  - id: OP-005
+    name: GetVehicleRoute
+    title: Маршрут автомобиля
+    description: Вернуть точки трека автомобиля за последние 24 часа в хронологическом порядке.
+    method: GET
+    path: /vehicles/{vehicleId}/route
+    roles: [Dispatcher, Driver]
+    output_entity: TrackPoint
+    output_list: true
+    covers: [FR-012]
+
+events:
+  - name: ZoneEntered
+    title: Въезд в зону
+    topic: parking-zone-events
+    key_field: vehicleId
+    recipient_field: driverUserId
+    notify: Вы въехали в зону платной парковки {zoneNumber}
+    payload:
+      - {name: vehicleId, title: Автомобиль, type: string}
+      - {name: driverUserId, title: Водитель, type: string}
+      - {name: zoneId, title: Зона, type: string}
+      - {name: zoneNumber, title: Номер зоны, type: string}
+  - name: ZoneLeft
+    title: Выезд из зоны
+    topic: parking-zone-events
+    key_field: vehicleId
+    recipient_field: driverUserId
+    notify: Вы покинули текущую парковочную зону {zoneNumber}
+    payload:
+      - {name: vehicleId, title: Автомобиль, type: string}
+      - {name: driverUserId, title: Водитель, type: string}
+      - {name: zoneId, title: Зона, type: string}
+      - {name: zoneNumber, title: Номер зоны, type: string}
+  - name: ZoneChanged
+    title: Смена зоны
+    topic: parking-zone-events
+    key_field: vehicleId
+    recipient_field: driverUserId
+    notify: Вы въехали в другую парковочную зону {zoneNumber}. Проверьте необходимость новой оплаты
+    payload:
+      - {name: vehicleId, title: Автомобиль, type: string}
+      - {name: driverUserId, title: Водитель, type: string}
+      - {name: fromZoneId, title: Прежняя зона, type: string}
+      - {name: zoneId, title: Новая зона, type: string}
+      - {name: zoneNumber, title: Номер зоны, type: string}
+  - name: SessionStarted
+    title: Сессия начата
+    topic: parking-session-events
+    key_field: sessionId
+    recipient_field: driverUserId
+    notify: Парковка оплачена до {paidUntilLocal}
+    payload:
+      - {name: sessionId, title: Сессия, type: string}
+      - {name: vehicleId, title: Автомобиль, type: string}
+      - {name: driverUserId, title: Водитель, type: string}
+      - {name: zoneId, title: Зона, type: string}
+      - {name: paidUntilLocal, title: Оплачено до, type: string}
+  - name: SessionExpiring
+    title: Сессия скоро закончится
+    topic: parking-session-events
+    key_field: sessionId
+    recipient_field: driverUserId
+    notify: До окончания парковки осталось {minutesLeft} минут
+    payload:
+      - {name: sessionId, title: Сессия, type: string}
+      - {name: vehicleId, title: Автомобиль, type: string}
+      - {name: driverUserId, title: Водитель, type: string}
+      - {name: minutesLeft, title: Осталось минут, type: int}
+  - name: SessionExpired
+    title: Сессия истекла
+    topic: parking-session-events
+    key_field: sessionId
+    recipient_field: driverUserId
+    notify: Оплаченное время парковки закончилось. Проверьте необходимость новой оплаты
+    payload:
+      - {name: sessionId, title: Сессия, type: string}
+      - {name: vehicleId, title: Автомобиль, type: string}
+      - {name: driverUserId, title: Водитель, type: string}
+  - name: SessionClosed
+    title: Сессия завершена
+    topic: parking-session-events
+    key_field: id
+    payload:
+      - {name: id, title: Сессия, type: string}
+
+jobs:
+  - name: CheckExpiringSessions
+    title: Контроль окончания сессий
+    description: >-
+      Активные сессии, у которых до paidUntil осталось 10 минут или меньше, перевести в статус
+      Expiring и создать событие SessionExpiring (minutesLeft — округлённые вверх минуты).
+      Сессии Active или Expiring с paidUntil в прошлом перевести в Expired и создать SessionExpired.
+    interval_seconds: 15
+    emits: [SessionExpiring, SessionExpired]
+    covers: [FR-009, FR-010]
+
+integrations:
+  - name: ParkingProvider
+    title: Поставщик парковочных сервисов
+    description: Получение ссылки на оплату и данных о зонах. Заменяемый адаптер.
+    real_system: Паркоматика / Парковки Санкт-Петербурга
+    methods:
+      - name: GetPaymentUrl
+        description: Ссылка на оплату парковки в официальном сервисе
+        mock_response: {url: "https://parking.spb.ru/pay?zone={zoneNumber}&plate={plateNumber}"}
+        input:
+          - {name: zoneNumber, title: Номер зоны, type: string}
+          - {name: plateNumber, title: Госномер, type: string}
+        output:
+          - {name: url, title: Ссылка, type: url}
+
+datasets:
+  - name: spb_zones
+    file: spb_zones.json
+    records_path: data.zones
+    entity: ParkingZone
+    geometry_format: wkt
+    mapping:
+      externalId: externalZoneId
+      name: displayName
+      geometry: geometry
+      priceKopecksPerHour: price
+      priceDescription: priceDescription
+      minDurationMinutes: minTime
+      stepMinutes: timeStep
+      tariff: tariff
+
+screens:
+  - id: SCR-001
+    name: Dashboard
+    title: Обзор автопарка
+    platform: web
+    roles: [Dispatcher]
+    covers: [FR-013]
+    widgets:
+      - {type: kpi, title: Автомобили, entity: Vehicle}
+      - {type: kpi, title: Активные сессии, entity: ParkingSession, props: {filter: {status: Active}}}
+      - {type: map, title: Карта, entity: Vehicle, props: {layers: [ParkingZone, Vehicle]}}
+      - {type: event_feed, title: Последние события}
+  - id: SCR-002
+    name: DriverHome
+    title: Моя парковка
+    platform: mobile
+    roles: [Driver]
+    covers: [FR-002, FR-003, FR-004, FR-009, FR-010, FR-011]
+    widgets:
+      - {type: map, title: Карта, props: {layers: [ParkingZone, Vehicle]}}
+      - {type: status_card, title: Текущая зона, operation: GetVehicleStatus}
+      - {type: countdown, title: Осталось, operation: GetVehicleStatus, field: paidUntil}
+      - {type: action_button, title: Начать парковку, operation: StartParkingSession}
+      - {type: action_button, title: Оплатить, operation: GetPaymentLink}
+      - {type: notifications, title: Уведомления}
+  - id: SCR-003
+    name: History
+    title: История
+    platform: mobile
+    roles: [Driver]
+    covers: [FR-012]
+    widgets:
+      - {type: list, title: Мои сессии, entity: ParkingSession}
+
+demo:
+  title: Служебный автомобиль в платных зонах
+  steps:
+    - {id: D0, title: Автомобиль движется по маршруту, action: route, entity: Vehicle, operation: SubmitTrackPoint, args: {leg: 0, zones: 2}}
+    - {id: D1, title: Автомобиль въезжает в зону, action: route, entity: Vehicle, operation: SubmitTrackPoint, args: {leg: 1, zones: 2}}
+    - {id: D2, title: Въезд в зону платной парковки, action: expect, args: {event: ZoneEntered}}
+    - {id: D3, title: Водитель запускает сессию на 60 минут, action: operation, operation: StartParkingSession, args: {durationMinutes: 60}}
+    - {id: D4, title: Система показывает время окончания, action: expect, args: {event: SessionStarted}}
+    - {id: D5, title: Прошло 50 минут, action: advance_time, minutes: 50}
+    - {id: D6, title: Предупреждение за 10 минут, action: expect, args: {event: SessionExpiring}}
+    - {id: D7, title: Автомобиль переезжает в другую зону, action: route, entity: Vehicle, operation: SubmitTrackPoint, args: {leg: 2, zones: 2}}
+    - {id: D8, title: Предложение проверить новую оплату, action: expect, args: {event: ZoneChanged}}

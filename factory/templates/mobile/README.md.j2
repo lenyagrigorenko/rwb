@@ -1,0 +1,16 @@
+# Мобильное приложение «{{spec.product_name}}»
+
+Android, Kotlin 2.2.21, Jetpack Compose, Material 3. Экраны генерируются из модели приложения (`spec.yaml`, screens/platform=mobile):
+{% for s in mobile_screens %}
+- **{{s.title}}** ({{ s.roles | join(', ') }}): {{ s.widgets | map(attribute='title') | join(', ') }}
+{% endfor %}
+
+## Сборка
+
+```bash
+./gradlew assembleDebug -PapiUrl=http://<адрес-сервера>:8080
+# APK: app/build/outputs/apk/debug/app-debug.apk
+```
+
+В эмуляторе Android адрес хоста — `http://10.0.2.2:8080` (по умолчанию). Адрес сервера можно изменить на экране входа.
+Уведомления приходят из `GET /api/v1/me/notifications` (опрос каждые 3 с) и показываются как системные уведомления.

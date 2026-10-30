@@ -1,0 +1,47 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}
+using System.ComponentModel.DataAnnotations;
+using System.Text.Json;
+using {{N}}.Application.Abstractions;
+using {{N}}.Domain.Entities;
+
+namespace {{N}}.Application.Dtos;
+
+/// <summary>{{e.title}}: представление для API.</summary>
+public sealed record {{e.name}}Dto(
+    Guid Id,
+{% for f in vm.fields %}
+    {{f.dto_type}} {{f.Name}},
+{% endfor %}
+    IReadOnlyDictionary<string, string?> Labels,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt)
+{
+    public static {{e.name}}Dto From({{e.name}} e, IReadOnlyDictionary<string, string?>? labels = null) => new(
+        e.Id,
+{% for f in vm.fields %}
+        {{f.to_dto}},
+{% endfor %}
+        labels ?? new Dictionary<string, string?>(),
+        e.CreatedAt,
+        e.UpdatedAt);
+}
+
+/// <summary>{{e.title}}: создание и изменение.</summary>
+public sealed class {{e.name}}UpsertRequest
+{
+{% for f in vm.upsert_fields %}
+{% for a in f.attrs %}
+    {{a}}
+{% endfor %}
+    public {{f.req_type}} {{f.Name}} { get; set; }
+
+{% endfor %}
+}
+
+/// <summary>{{e.title}}: фильтры списка.</summary>
+public sealed class {{e.name}}Filter
+{
+{% for f in vm.filter_fields %}
+    public {{f.filter_type}} {{f.Name}} { get; set; }
+{% endfor %}
+}

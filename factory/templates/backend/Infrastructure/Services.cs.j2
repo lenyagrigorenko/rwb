@@ -1,0 +1,488 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}
+using System.Net.Http.Json;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
+using Confluent.Kafka;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Npgsql;
+using {{N}}.Application;
+using {{N}}.Application.Abstractions;
+using {{N}}.Application.Events;
+using {{N}}.Application.Integrations;
+using {{N}}.Domain.Entities;
+using {{N}}.Infrastructure.Persistence;
+
+namespace {{N}}.Infrastructure;
+
+/// <summary>Часы приложения со сдвигом для демонстрационного режима (ускорение сценария).</summary>
+public sealed class DemoTimeProvider : TimeProvider
+{
+    private long _offsetTicks;
+
+    public TimeSpan Offset => TimeSpan.FromTicks(Interlocked.Read(ref _offsetTicks));
+
+    public override DateTimeOffset GetUtcNow() => base.GetUtcNow() + Offset;
+
+    public void Advance(TimeSpan by) => Interlocked.Add(ref _offsetTicks, by.Ticks);
+
+    public void Reset() => Interlocked.Exchange(ref _offsetTicks, 0);
+}
+
+/// <summary>Геопоиск средствами PostGIS (geography, метры). Использует GIST-индексы по (geom::geography).</summary>
+public sealed class GeoService(AppDbContext db) : IGeoService
+{
+    internal static readonly Dictionary<string, (string Table, string Column)> Layers = new()
+    {
+{% for e in spec.entities %}{% if e.geo_fields %}
+        ["{{e.name}}"] = ("{{table(e)}}", "{{column(e.geo_fields[0])}}"),
+{% endif %}{% endfor %}
+    };
+
+    public async Task<GeoMatch?> FindNearestAsync(string entity, double lon, double lat, double radiusMeters, CancellationToken ct) =>
+        (await FindWithinAsync(entity, lon, lat, radiusMeters, 1, ct)).FirstOrDefault();
+
+    public async Task<IReadOnlyList<GeoMatch>> FindWithinAsync(string entity, double lon, double lat, double radiusMeters, int limit, CancellationToken ct)
+    {
+        if (!Layers.TryGetValue(entity, out var layer)) throw new ArgumentException($"Entity {entity} has no geometry", nameof(entity));
+        var sql = $"""
+            SELECT id, ST_Distance({layer.Column}::geography, ST_SetSRID(ST_MakePoint(@lon, @lat), 4326)::geography) AS d
+            FROM {layer.Table}
+            WHERE {layer.Column} IS NOT NULL
+              AND ST_DWithin({layer.Column}::geography, ST_SetSRID(ST_MakePoint(@lon, @lat), 4326)::geography, @r)
+            ORDER BY d
+            LIMIT @limit
+            """;
+        var result = new List<GeoMatch>();
+        await db.Database.OpenConnectionAsync(ct);
+        try
+        {
+            await using var cmd = new NpgsqlCommand(sql, (NpgsqlConnection)db.Database.GetDbConnection());
+            cmd.Parameters.AddWithValue("lon", lon);
+            cmd.Parameters.AddWithValue("lat", lat);
+            cmd.Parameters.AddWithValue("r", radiusMeters);
+            cmd.Parameters.AddWithValue("limit", limit);
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct)) result.Add(new GeoMatch(reader.GetGuid(0), reader.GetDouble(1)));
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
+        return result;
+    }
+}
+
+/// <summary>Строит демонстрационный маршрут: подъезд к первому объекту и переезды к следующим.</summary>
+public sealed class DemoRoutePlanner(AppDbContext db, IGeoService geo) : IDemoRoutePlanner
+{
+    private const double MatchRadius = 25;
+
+    public async Task<DemoRoute> PlanAsync(string entity, int zones, CancellationToken ct)
+    {
+        var (table, column) = GeoService.Layers[entity];
+        var anchors = await QueryPointsAsync($"""
+            WITH c AS (SELECT ST_Centroid(ST_Collect({column})) AS p FROM {table})
+            SELECT t.id, ST_Y(ST_ClosestPoint(t.{column}, ST_Centroid(t.{column}))), ST_X(ST_ClosestPoint(t.{column}, ST_Centroid(t.{column})))
+            FROM {table} t, c WHERE t.{column} IS NOT NULL
+            ORDER BY ST_Distance(t.{column}, c.p) LIMIT 60
+            """, ct);
+        foreach (var first in anchors)
+        {
+            if (!await ResolvesToAsync(entity, first.Point, first.Id, ct)) continue;
+            var chain = new List<(Guid Id, GeoPoint Point)> { first };
+            while (chain.Count < zones)
+            {
+                var last = chain[^1];
+                var next = await QueryPointsAsync($"""
+                    SELECT id, ST_Y(p), ST_X(p) FROM (
+                      SELECT id, ST_ClosestPoint({column}, ST_Centroid({column})) AS p,
+                             ST_Distance({column}::geography, ST_SetSRID(ST_MakePoint({Inv(last.Point.Lon)}, {Inv(last.Point.Lat)}), 4326)::geography) AS d
+                      FROM {table}
+                      WHERE {column} IS NOT NULL
+                        AND ST_DWithin({column}::geography, ST_SetSRID(ST_MakePoint({Inv(last.Point.Lon)}, {Inv(last.Point.Lat)}), 4326)::geography, 700)
+                    ) s WHERE d > 150 ORDER BY d LIMIT 20
+                    """, ct);
+                (Guid, GeoPoint)? pick = null;
+                foreach (var n in next)
+                {
+                    if (chain.Any(c => c.Id == n.Id)) continue;
+                    if (await ResolvesToAsync(entity, n.Point, n.Id, ct)) { pick = n; break; }
+                }
+                if (pick is null) break;
+                chain.Add(pick.Value);
+            }
+            if (chain.Count < zones) continue;
+            var start = await FreeStartAsync(entity, first.Point, ct);
+            var exit = await FreeStartAsync(entity, chain[^1].Point, ct);
+            if (start is null || exit is null) continue;
+            // Канонические участки: 0 — движение вне зон, 1 — въезд в первый объект, 2 — переезд к следующему, 3 — выезд.
+            var approach = new GeoPoint(start.Value.Lat + (first.Point.Lat - start.Value.Lat) * 0.5, start.Value.Lon + (first.Point.Lon - start.Value.Lon) * 0.5);
+            if ((await geo.FindWithinAsync(entity, approach.Lon, approach.Lat, 40, 1, ct)).Count > 0) approach = start.Value;
+            var legs = new List<IReadOnlyList<GeoPoint>>
+            {
+                await FreeLegAsync(entity, start.Value, approach, ct),
+                await LegAsync(entity, approach, first.Point, first.Id, ct),
+            };
+            for (var i = 1; i < chain.Count; i++) legs.Add(await LegAsync(entity, chain[i - 1].Point, chain[i].Point, chain[i].Id, ct));
+            legs.Add(await FreeLegAsync(entity, chain[^1].Point, exit.Value, ct));
+            return new DemoRoute(legs, chain.Select(c => c.Id).ToList());
+        }
+        throw new InvalidOperationException("Не удалось построить демонстрационный маршрут");
+    }
+
+    private async Task<bool> ResolvesToAsync(string entity, GeoPoint p, Guid id, CancellationToken ct) =>
+        (await geo.FindNearestAsync(entity, p.Lon, p.Lat, MatchRadius, ct))?.Id == id;
+
+    private async Task<GeoPoint?> FreeStartAsync(string entity, GeoPoint target, CancellationToken ct)
+    {
+        foreach (var distance in new[] { 300.0, 500.0, 800.0 })
+        {
+            for (var k = 0; k < 8; k++)
+            {
+                var angle = Math.PI / 4 * k;
+                var lat = target.Lat + distance / 111_320 * Math.Sin(angle);
+                var lon = target.Lon + distance / (111_320 * Math.Cos(target.Lat * Math.PI / 180)) * Math.Cos(angle);
+                if ((await geo.FindWithinAsync(entity, lon, lat, 60, 1, ct)).Count == 0) return new GeoPoint(lat, lon);
+            }
+        }
+        return null;
+    }
+
+    private async Task<IReadOnlyList<GeoPoint>> LegAsync(string entity, GeoPoint from, GeoPoint to, Guid targetId, CancellationToken ct)
+    {
+        var points = new List<GeoPoint>();
+        const int steps = 6;
+        for (var i = 1; i <= steps; i++)
+        {
+            var t = (double)i / steps;
+            var p = new GeoPoint(from.Lat + (to.Lat - from.Lat) * t, from.Lon + (to.Lon - from.Lon) * t);
+            if (i == steps) { points.Add(to); break; }
+            var hit = await geo.FindNearestAsync(entity, p.Lon, p.Lat, MatchRadius, ct);
+            if (hit is null) points.Add(p);
+        }
+        return points;
+    }
+
+    /// <summary>Участок, все точки которого вне объектов слоя (последняя точка — цель).</summary>
+    private async Task<IReadOnlyList<GeoPoint>> FreeLegAsync(string entity, GeoPoint from, GeoPoint to, CancellationToken ct)
+    {
+        var points = new List<GeoPoint>();
+        const int steps = 5;
+        for (var i = 1; i <= steps; i++)
+        {
+            var t = (double)i / steps;
+            var p = new GeoPoint(from.Lat + (to.Lat - from.Lat) * t, from.Lon + (to.Lon - from.Lon) * t);
+            if (i == steps || await geo.FindNearestAsync(entity, p.Lon, p.Lat, MatchRadius, ct) is null) points.Add(p);
+        }
+        return points;
+    }
+
+    private async Task<List<(Guid Id, GeoPoint Point)>> QueryPointsAsync(string sql, CancellationToken ct)
+    {
+        var result = new List<(Guid, GeoPoint)>();
+        await db.Database.OpenConnectionAsync(ct);
+        try
+        {
+            await using var cmd = new NpgsqlCommand(sql, (NpgsqlConnection)db.Database.GetDbConnection());
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct)) result.Add((reader.GetGuid(0), new GeoPoint(reader.GetDouble(1), reader.GetDouble(2))));
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
+        return result;
+    }
+
+    private static string Inv(double v) => v.ToString(System.Globalization.CultureInfo.InvariantCulture);
+}
+
+/// <summary>Пишет событие в outbox и уведомление получателю в рамках текущей транзакции.</summary>
+public sealed partial class EventPublisher(AppDbContext db, TimeProvider clock) : IEventPublisher
+{
+    public Task Publish<TPayload>(TPayload payload, Guid? entityId, CancellationToken ct) where TPayload : IEventPayload =>
+        Publish(payload, entityId);
+
+    public Task Publish<TPayload>(TPayload payload, Guid? entityId = null) where TPayload : IEventPayload
+    {
+        var meta = EventCatalog.Get<TPayload>();
+        var json = JsonSerializer.Serialize(payload, AppJson.Options);
+        var node = JsonNode.Parse(json)!.AsObject();
+        var now = clock.GetUtcNow();
+        var ev = new OutboxEvent
+        {
+            Type = meta.Name,
+            Version = meta.Version,
+            Topic = meta.Topic,
+            Key = node[meta.KeyField]?.ToString(),
+            EntityId = entityId,
+            Payload = json,
+            OccurredAt = now,
+        };
+        db.OutboxEvents.Add(ev);
+        if (meta.Notify is not null && meta.RecipientField is not null && Guid.TryParse(node[meta.RecipientField]?.ToString(), out var userId))
+        {
+            db.Notifications.Add(new AppNotification
+            {
+                UserId = userId,
+                Title = meta.Title,
+                Body = Placeholder().Replace(meta.Notify, m => Humanize(node[m.Groups[1].Value]?.ToString())),
+                EventType = meta.Name,
+                EventId = ev.Id,
+                CreatedAt = now,
+            });
+        }
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Дата-время ISO в тексте уведомления показывается по местному времени (ЧЧ:ММ).</summary>
+    private static string Humanize(string? value) =>
+        value is { Length: >= 16 } && value[10] == 'T' && DateTimeOffset.TryParse(value, System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.AssumeUniversal, out var t)
+            ? AppTime.Hm(t)
+            : value ?? "";
+
+    [GeneratedRegex(@"\{(\w+)\}")]
+    private static partial Regex Placeholder();
+}
+
+/// <summary>Публикует события из outbox в Kafka (at-least-once, ключ партиционирования из каталога).</summary>
+public sealed class OutboxDispatcher(IServiceScopeFactory scopes, IConfiguration cfg, ILogger<OutboxDispatcher> log) : BackgroundService
+{
+    private Task EnsureTopicsAsync(string bootstrap, CancellationToken ct) => KafkaTopics.EnsureAsync(bootstrap, log);
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        var bootstrap = cfg["Kafka:BootstrapServers"];
+        using var producer = string.IsNullOrWhiteSpace(bootstrap) ? null
+            : new ProducerBuilder<string, string>(new ProducerConfig
+            {
+                BootstrapServers = bootstrap,
+                EnableIdempotence = true,
+                Acks = Acks.All,
+                MessageTimeoutMs = 5000,
+            }).Build();
+        if (producer is null) log.LogWarning("Kafka:BootstrapServers is empty: events stay in the outbox table only");
+        else await EnsureTopicsAsync(bootstrap!, stoppingToken);
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                using var scope = scopes.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var batch = await db.OutboxEvents.Where(x => x.PublishedAt == null).OrderBy(x => x.OccurredAt).Take(100).ToListAsync(stoppingToken);
+                foreach (var e in batch)
+                {
+                    e.Attempts++;
+                    if (producer is not null)
+                    {
+                        var envelope = new JsonObject
+                        {
+                            ["id"] = e.Id.ToString(),
+                            ["type"] = e.Type,
+                            ["version"] = e.Version,
+                            ["occurredAt"] = e.OccurredAt.ToString("O"),
+                            ["payload"] = JsonNode.Parse(e.Payload),
+                        };
+                        await producer.ProduceAsync(e.Topic, new Message<string, string>
+                        {
+                            Key = e.Key ?? e.Id.ToString(),
+                            Value = envelope.ToJsonString(),
+                            Headers = new Headers
+                            {
+                                { "event-id", Encoding.UTF8.GetBytes(e.Id.ToString()) },
+                                { "event-type", Encoding.UTF8.GetBytes(e.Type) },
+                                { "event-version", Encoding.UTF8.GetBytes(e.Version.ToString(System.Globalization.CultureInfo.InvariantCulture)) },
+                            },
+                        }, stoppingToken);
+                    }
+                    e.PublishedAt = DateTimeOffset.UtcNow;
+                }
+                if (batch.Count > 0) await db.SaveChangesAsync(stoppingToken);
+            }
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+            {
+                log.LogWarning("Outbox dispatch failed, will retry: {Message}", ex.Message);
+                await Task.Delay(TimeSpan.FromSeconds(3), stoppingToken);
+            }
+            await Task.Delay(TimeSpan.FromMilliseconds(500), stoppingToken);
+        }
+    }
+}
+
+/// <summary>Создание топиков из каталога событий (идемпотентно).</summary>
+public static class KafkaTopics
+{
+    public static async Task EnsureAsync(string bootstrap, ILogger log)
+    {
+        try
+        {
+            using var admin = new AdminClientBuilder(new AdminClientConfig { BootstrapServers = bootstrap }).Build();
+            var existing = admin.GetMetadata(TimeSpan.FromSeconds(5)).Topics.Select(t => t.Topic).ToHashSet();
+            var missing = EventCatalog.Topics.Where(t => !existing.Contains(t))
+                .Select(t => new Confluent.Kafka.Admin.TopicSpecification { Name = t, NumPartitions = 3, ReplicationFactor = 1 }).ToList();
+            if (missing.Count > 0) await admin.CreateTopicsAsync(missing);
+        }
+        catch (Confluent.Kafka.Admin.CreateTopicsException ex) when (ex.Results.All(r => r.Error.Code == ErrorCode.TopicAlreadyExists))
+        {
+        }
+        catch (Exception ex)
+        {
+            log.LogWarning("Kafka topics were not created: {Message}", ex.Message);
+        }
+    }
+}
+
+/// <summary>Консьюмер событий: сохраняет историю, повторная доставка игнорируется по event id.</summary>
+public sealed class EventHistoryConsumer(IServiceScopeFactory scopes, IConfiguration cfg, ILogger<EventHistoryConsumer> log) : BackgroundService
+{
+    protected override Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        var bootstrap = cfg["Kafka:BootstrapServers"];
+        if (string.IsNullOrWhiteSpace(bootstrap) || EventCatalog.Topics.Length == 0) return Task.CompletedTask;
+        return Task.Run(async () =>
+        {
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                try
+                {
+                    using var consumer = new ConsumerBuilder<string, string>(new ConsumerConfig
+                    {
+                        BootstrapServers = bootstrap,
+                        GroupId = "{{spec.slug}}-history",
+                        AutoOffsetReset = AutoOffsetReset.Earliest,
+                        EnableAutoCommit = false,
+                        AllowAutoCreateTopics = true,
+                    }).Build();
+                    await KafkaTopics.EnsureAsync(bootstrap, log);
+                    consumer.Subscribe(EventCatalog.Topics);
+                    while (!stoppingToken.IsCancellationRequested)
+                    {
+                        var cr = consumer.Consume(TimeSpan.FromSeconds(1));
+                        if (cr is null) continue;
+                        var envelope = JsonNode.Parse(cr.Message.Value)!.AsObject();
+                        var id = Guid.Parse(envelope["id"]!.ToString());
+                        using var scope = scopes.CreateScope();
+                        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                        if (!await db.ConsumedEvents.AnyAsync(x => x.EventId == id, stoppingToken))
+                        {
+                            db.ConsumedEvents.Add(new ConsumedEvent
+                            {
+                                EventId = id,
+                                Type = envelope["type"]?.ToString() ?? "",
+                                Topic = cr.Topic,
+                                Partition = cr.Partition.Value,
+                                Offset = cr.Offset.Value,
+                                Payload = envelope["payload"]?.ToJsonString() ?? "{}",
+                                ConsumedAt = DateTimeOffset.UtcNow,
+                            });
+                            await db.SaveChangesAsync(stoppingToken);
+                        }
+                        consumer.Commit(cr);
+                    }
+                }
+                catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+                {
+                    log.LogWarning("Kafka consumer error, reconnecting: {Message}", ex.Message);
+                    await Task.Delay(TimeSpan.FromSeconds(3), stoppingToken);
+                }
+            }
+        }, stoppingToken);
+    }
+}
+
+/// <summary>Планировщик фоновых задач (IJob). RunAllAsync вызывается и демо-режимом после сдвига часов.</summary>
+public sealed class JobRunner(IServiceScopeFactory scopes, ILogger<JobRunner> log) : BackgroundService
+{
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly Dictionary<string, DateTimeOffset> _lastRun = [];
+
+    public async Task RunAllAsync(bool force, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            using var scope = scopes.CreateScope();
+            foreach (var job in scope.ServiceProvider.GetServices<IJob>())
+            {
+                var now = DateTimeOffset.UtcNow;
+                if (!force && _lastRun.TryGetValue(job.Name, out var last) && now - last < job.Interval) continue;
+                _lastRun[job.Name] = now;
+                try
+                {
+                    await job.RunAsync(ct);
+                }
+                catch (Exception ex) when (!ct.IsCancellationRequested)
+                {
+                    log.LogError(ex, "Job {Job} failed", job.Name);
+                }
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(3), stoppingToken);
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            await RunAllAsync(false, stoppingToken);
+            await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
+        }
+    }
+}
+{% for i in spec.integrations %}
+
+/// <summary>HTTP-адаптер «{{i.title}}». Сейчас указывает на mock-сервис; для промышленного поставщика замените базовый адрес или реализацию.</summary>
+public sealed class Http{{i.name}}Adapter(HttpClient http) : I{{i.name}}
+{
+{% for m in i.methods %}
+    public async Task<{{i.name}}{{m.name}}Response> {{m.name}}Async({{i.name}}{{m.name}}Request request, CancellationToken ct)
+    {
+        using var response = await http.PostAsJsonAsync("api/{{kebab(i.name)}}/{{kebab(m.name)}}", request, AppJson.Options, ct);
+        response.EnsureSuccessStatusCode();
+        return (await response.Content.ReadFromJsonAsync<{{i.name}}{{m.name}}Response>(AppJson.Options, ct))!;
+    }
+
+{% endfor %}
+}
+{% endfor %}
+
+public static class DependencyInjection
+{
+    public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration cfg)
+    {
+        var connectionString = cfg.GetConnectionString("Default") ?? throw new InvalidOperationException("ConnectionStrings:Default is not configured");
+        services.AddDbContext<AppDbContext>(o => o.UseNpgsql(connectionString, x => x.UseNetTopologySuite()));
+        services.AddScoped<IAppDbContext>(sp => sp.GetRequiredService<AppDbContext>());
+        services.AddSingleton<DemoTimeProvider>();
+        services.AddSingleton<TimeProvider>(sp => sp.GetRequiredService<DemoTimeProvider>());
+        services.AddScoped<IEventPublisher, EventPublisher>();
+        services.AddScoped<IGeoService, GeoService>();
+        services.AddScoped<IDemoRoutePlanner, DemoRoutePlanner>();
+        services.AddScoped<MigrationRunner>();
+        services.AddScoped<Seeder>();
+        services.AddSingleton<Microsoft.AspNetCore.Identity.IPasswordHasher<AppUser>, Microsoft.AspNetCore.Identity.PasswordHasher<AppUser>>();
+        services.AddSingleton<JobRunner>();
+        services.AddHostedService(sp => sp.GetRequiredService<JobRunner>());
+        services.AddHostedService<OutboxDispatcher>();
+        services.AddHostedService<EventHistoryConsumer>();
+{% for i in spec.integrations %}
+        services.AddHttpClient<I{{i.name}}, Http{{i.name}}Adapter>(c =>
+        {
+            c.BaseAddress = new Uri(cfg["Integrations:BaseUrl"] ?? "http://mocks:8080/");
+            c.Timeout = TimeSpan.FromSeconds(5);
+        });
+{% endfor %}
+        return services;
+    }
+}

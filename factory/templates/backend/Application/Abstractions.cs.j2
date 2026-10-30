@@ -1,0 +1,120 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Microsoft.EntityFrameworkCore;
+using NetTopologySuite.Geometries;
+using NetTopologySuite.IO.Converters;
+using {{N}}.Domain.Entities;
+
+namespace {{N}}.Application.Abstractions;
+
+/// <summary>Контекст данных приложения (реализован в Infrastructure).</summary>
+public interface IAppDbContext
+{
+{% for e in spec.entities %}
+    DbSet<{{e.name}}> {{plural(e.name)}} { get; }
+{% endfor %}
+    DbSet<AppUser> Users { get; }
+    DbSet<OutboxEvent> OutboxEvents { get; }
+    DbSet<ConsumedEvent> ConsumedEvents { get; }
+    DbSet<AppNotification> Notifications { get; }
+    Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
+}
+
+/// <summary>Текущий аутентифицированный пользователь.</summary>
+public interface ICurrentUser
+{
+    Guid? UserId { get; }
+    string? Role { get; }
+    bool IsAuthenticated { get; }
+    Guid RequireUserId();
+}
+
+/// <summary>Маркер полезной нагрузки доменного события.</summary>
+public interface IEventPayload;
+
+/// <summary>Публикация доменных событий через outbox. Событие сохраняется вызовом SaveChangesAsync.</summary>
+public interface IEventPublisher
+{
+    /// <summary>Добавляет событие (и уведомление) в текущую транзакцию. Возвращает завершённую задачу — можно вызывать с await.</summary>
+    Task Publish<TPayload>(TPayload payload, Guid? entityId = null) where TPayload : IEventPayload;
+
+    Task Publish<TPayload>(TPayload payload, Guid? entityId, CancellationToken ct) where TPayload : IEventPayload;
+}
+
+/// <summary>Результат геопоиска.</summary>
+public sealed record GeoMatch(Guid Id, double DistanceMeters);
+
+/// <summary>Геопоиск по слоям PostGIS (расстояния в метрах, координаты WGS84).</summary>
+public interface IGeoService
+{
+    /// <summary>Ближайший объект слоя <paramref name="entity"/> в радиусе, или null.</summary>
+    Task<GeoMatch?> FindNearestAsync(string entity, double lon, double lat, double radiusMeters, CancellationToken ct);
+
+    /// <summary>Объекты слоя в радиусе, по возрастанию расстояния.</summary>
+    Task<IReadOnlyList<GeoMatch>> FindWithinAsync(string entity, double lon, double lat, double radiusMeters, int limit, CancellationToken ct);
+}
+
+/// <summary>Построение демонстрационного маршрута через объекты геослоя.</summary>
+public interface IDemoRoutePlanner
+{
+    Task<DemoRoute> PlanAsync(string entity, int zones, CancellationToken ct);
+}
+
+/// <summary>Демонстрационный маршрут: участки (legs) и объекты, через которые он проходит.</summary>
+public sealed record DemoRoute(IReadOnlyList<IReadOnlyList<GeoPoint>> Legs, IReadOnlyList<Guid> Targets);
+
+public readonly record struct GeoPoint(double Lat, double Lon);
+
+/// <summary>Преобразования геометрии в GeoJSON и обратно.</summary>
+public static class GeoJson
+{
+    public static readonly JsonSerializerOptions Options = CreateOptions();
+
+    private static JsonSerializerOptions CreateOptions()
+    {
+        var o = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        o.Converters.Add(new GeoJsonConverterFactory());
+        return o;
+    }
+
+    public static JsonElement? ToJson(Geometry? g) => g is null ? null : JsonSerializer.SerializeToElement(g, Options);
+
+    public static Geometry? FromJson(JsonElement? json)
+    {
+        if (json is null || json.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined) return null;
+        var g = json.Value.Deserialize<Geometry>(Options);
+        if (g is not null) g.SRID = 4326;
+        return g;
+    }
+
+    public static Point Point(double lon, double lat) => new(lon, lat) { SRID = 4326 };
+
+    public static JsonElement? Raw(string? json) => json is null ? null : JsonDocument.Parse(json).RootElement.Clone();
+}
+
+/// <summary>Местное время пользователей (Europe/Moscow; при отсутствии tzdata — фиксированный UTC+3).</summary>
+public static class AppTime
+{
+    private static readonly TimeZoneInfo Zone = Resolve();
+
+    private static TimeZoneInfo Resolve()
+    {
+        try { return TimeZoneInfo.FindSystemTimeZoneById("Europe/Moscow"); }
+        catch (TimeZoneNotFoundException) { return TimeZoneInfo.CreateCustomTimeZone("MSK", TimeSpan.FromHours(3), "MSK", "MSK"); }
+    }
+
+    public static DateTimeOffset ToLocal(DateTimeOffset utc) => TimeZoneInfo.ConvertTime(utc, Zone);
+
+    /// <summary>Время в формате ЧЧ:ММ по местному времени.</summary>
+    public static string Hm(DateTimeOffset utc) => ToLocal(utc).ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+}
+
+/// <summary>Общие настройки JSON (camelCase, enum как строки).</summary>
+public static class AppJson
+{
+    public static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() },
+    };
+}

@@ -1,0 +1,77 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}
+using System.Net;
+using {{N}}.Application.Common;
+
+namespace {{N}}.Tests;
+
+/// <summary>Матрица прав из IR (модульный тест без БД).</summary>
+public sealed class PermissionMatrixTests
+{
+    [Theory]
+{% for p in spec.permissions %}
+{% for a in ['read', 'read_own', 'create', 'update', 'update_own', 'delete'] %}
+    [InlineData("{{p.role}}", "{{p.entity}}", "{{a}}", {{ 'true' if a in p.actions else 'false' }})]
+{% endfor %}
+{% endfor %}
+    public void Matrix_matches_specification(string role, string entity, string action, bool expected) =>
+        Assert.Equal(expected, Permissions.Can(role, entity, action));
+
+    [Fact]
+    public void Unknown_role_has_no_access() => Assert.False(Permissions.Can("Anonymous", "{{spec.entities[0].name}}", "read"));
+}
+
+/// <summary>Сквозные проверки доступа к API для каждой роли и сущности (Testcontainers + PostGIS).</summary>
+[Collection(ApiCollection.Name)]
+[Trait("Category", "Integration")]
+public sealed class AccessControlTests(ApiFactory api)
+{
+    [Fact]
+    public async Task Health_is_ready()
+    {
+        var response = await api.CreateClient().GetAsync("/health/ready");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Anonymous_request_is_rejected()
+    {
+        var response = await api.CreateClient().GetAsync("/api/v1/{{route(spec.entities[0])}}");
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Wrong_password_returns_problem_details()
+    {
+        var response = await api.CreateClient().PostAsync("/api/v1/auth/login",
+            new StringContent("""{"login":"{{spec.roles[0].demo_login}}","password":"wrong"}""", System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Theory]
+{% for r in spec.roles %}
+{% for e in spec.entities %}
+    [InlineData("{{r.demo_login}}", "{{route(e)}}", {{ 'true' if ('read' in spec.actions(r.name, e.name) or 'read_own' in spec.actions(r.name, e.name)) else 'false' }})]
+{% endfor %}
+{% endfor %}
+    public async Task List_access_follows_role_matrix(string login, string route, bool allowed)
+    {
+        var client = await api.LoginAsync(login);
+        var response = await client.GetAsync($"/api/v1/{route}");
+        Assert.Equal(allowed ? HttpStatusCode.OK : HttpStatusCode.Forbidden, response.StatusCode);
+    }
+{% for e in owner_entities %}
+
+    [Fact]
+    public async Task {{e.name}}_owner_sees_only_own_rows()
+    {
+        var first = await api.LoginAsync("{{e._own_login}}");
+        var second = await api.LoginAsync("{{e._own_login}}2");
+        var a = await Json.ReadAsync(await first.GetAsync("/api/v1/{{route(e)}}?pageSize=500"));
+        var b = await Json.ReadAsync(await second.GetAsync("/api/v1/{{route(e)}}?pageSize=500"));
+        var idsA = a!["items"]!.AsArray().Select(x => x!["id"]!.ToString()).ToHashSet();
+        var idsB = b!["items"]!.AsArray().Select(x => x!["id"]!.ToString()).ToHashSet();
+        Assert.Empty(idsA.Intersect(idsB));
+    }
+{% endfor %}
+}

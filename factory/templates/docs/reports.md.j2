@@ -1,0 +1,254 @@
+{% macro api() %}
+# Описание API
+
+- Базовый путь: `/api/v1`, версия в пути и в заголовке ответа `api-version`.
+- Аутентификация: `POST /api/v1/auth/login` → `{token}`; далее заголовок `Authorization: Bearer <token>`.
+- Ошибки: `application/problem+json` (см. системный анализ, раздел 12).
+- Ограничение частоты: 1200 запросов/мин на пользователя, 30/мин на вход; превышение — 429.
+- Идемпотентность: заголовок `Idempotency-Key` для POST — повтор возвращает сохранённый ответ (`Idempotent-Replayed: true`).
+- Журналирование: каждый запрос пишется в структурированный JSON-лог с `X-Correlation-Id`.
+- Спецификация OpenAPI 3.1: `docs/api/openapi.json` и `GET /openapi/v1.json`.
+
+## Служебные эндпоинты
+
+| Метод и путь | Назначение | Доступ |
+|---|---|---|
+| `POST /api/v1/auth/login` | Вход | все |
+| `GET /api/v1/auth/me` | Текущий пользователь | авторизованные |
+| `GET /api/v1/me/notifications` | Уведомления пользователя | авторизованные |
+| `GET /api/v1/events` | Журнал доменных событий | {{ admin_roles | join(', ') }} |
+| `GET /api/v1/dashboard` | Сводные показатели | {{ admin_roles | join(', ') }} |
+| `GET/POST /api/v1/demo…` | Демо-сценарий и сдвиг часов | {{ admin_roles | join(', ') }} |
+| `GET /health/live`, `/health/ready` | Проверки работоспособности | все |
+
+{% for e in spec.entities %}
+## {{e.title_plural}} — `/api/v1/{{route(e)}}`
+
+| Метод | Путь | Описание |
+|---|---|---|
+| GET | `/api/v1/{{route(e)}}` | Список (page, pageSize, sort, dir, q{% for f in e.fields if f.type in ['enum', 'ref', 'bool'] %}, {{f.name}}{% endfor %}) |
+| GET | `/api/v1/{{route(e)}}/{id}` | Запись |
+| POST | `/api/v1/{{route(e)}}` | Создание |
+| PUT | `/api/v1/{{route(e)}}/{id}` | Изменение |
+| DELETE | `/api/v1/{{route(e)}}/{id}` | Удаление |
+{% if e.lifecycle %}{% for t in e.lifecycle.transitions %}
+| POST | `/api/v1/{{route(e)}}/{id}/{{kebab(t.name)}}` | {{t.title}} |
+{% endfor %}{% endif %}
+{% if e.geo_fields %}
+| GET | `/api/v1/{{route(e)}}/geojson` | GeoJSON для карты (bbox) |
+{% endif %}
+
+{% endfor %}
+## Бизнес-операции
+
+| ID | Метод и путь | Операция | Роли |
+|---|---|---|---|
+{% for op in spec.operations %}
+| {{op.id}} | `{{op.method}} /api/v1{{op.path}}` | {{op.title}} | {{ op.roles | join(', ') }} |
+{% endfor %}
+{% endmacro %}
+
+{% macro data_model() %}
+# Модель данных
+
+Схема создаётся SQL-миграцией `V001__init.sql` и совпадает с маппингом EF Core и разделом 8 системного анализа.
+Служебные таблицы: `app_users`, `outbox_events`, `consumed_events`, `notifications`, `idempotency_keys`, `schema_migrations`.
+
+| Сущность | Таблица | Полей | Связи | Геоданные |
+|---|---|---|---|---|
+{% for e in spec.entities %}
+| {{e.title}} | `{{table(e)}}` | {{ e.fields | length }} | {{ e.fields | selectattr('type', 'equalto', 'ref') | map(attribute='ref') | join(', ') or '—' }} | {{ e.geo_fields | map(attribute='name') | join(', ') or '—' }} |
+{% endfor %}
+
+Подробные таблицы полей, ER-диаграмма и правила импорта — в [системном анализе, раздел 8](01-system-analysis.md#8-модель-данных).
+{% endmacro %}
+
+{% macro events() %}
+# События
+
+Схема в формате AsyncAPI 3.0: [asyncapi.yaml](asyncapi.yaml).
+
+| Событие | Версия | Топик | Ключ | Источник | Уведомление |
+|---|---|---|---|---|---|
+{% for ev in spec.events %}
+| {{ev.name}} | {{ev.version}} | `{{ev.topic}}` | `{{ev.key_field}}` | {{ sources.get(ev.name, []) | join(', ') or '—' }} | {{ ev.notify or '—' }} |
+{% endfor %}
+
+**Правила обработки:** конверт `{id, type, version, occurredAt, payload}`; доставка at-least-once; консьюмер хранит
+id обработанных событий и пропускает повторы; при ошибке сообщение не подтверждается и будет доставлено снова;
+несовместимые изменения схемы — новая версия события.
+{% endmacro %}
+
+{% macro test_report() %}
+# Отчёт о тестировании
+
+| Проверка | Результат |
+|---|---|
+| Сборка backend | {{ '✅ успешно' if result.get('build_ok') else '❌ ошибки' }} |
+| Автотесты backend | {{ verification.get('summary') or 'не запускались' }} |
+| Соответствие UI Kit (линтер) | ✅ выполняется при сборке frontend |
+| Сборка frontend | выполняется в Docker/CI |
+{% if spec.has_mobile %}
+| Сборка Android (APK) | {{ '✅ успешно' if verification.get('apk') else ('❌ ошибки' if verification.get('apk') is false else 'в CI') }} |
+{% endif %}
+
+{% if verification.get('demo') %}
+## Сквозной демо-сценарий (выполнен на развёрнутом стенде)
+{% if verification.get('video') %}
+
+Видеозапись прогона в браузере: [demo.webm](demo.webm); снимки экрана: [обзор](media/dashboard.png), [демо](media/demo.png), [события](media/events.png).
+{% endif %}
+
+| Шаг | Статус | Результат |
+|---|---|---|
+{% for st in verification.get('demo').get('steps', []) %}
+| {{st.title}} | {{ {'done': '✅', 'failed': '❌', 'pending': '⏸', 'running': '…'}.get(st.status, st.status) }} | {{ (st.detail or '') | replace('|', '/') | truncate(160) }} |
+{% endfor %}
+
+{% endif %}
+## Состав тестов
+
+- `PermissionMatrixTests` — {{ spec.permissions | length * 6 }} проверок матрицы прав из модели.
+- `AccessControlTests` — доступ к API для каждой роли и сущности, анонимный доступ, формат ошибок, изоляция «своих» записей.
+- Сквозной демо-сценарий — выполняется кнопкой «Запустить» и в CI, шаги и результаты фиксируются.
+
+## Трассировка требований
+
+| ФТ | Критерии приёмки | Покрытие |
+|---|---|---|
+{% for fr in a.functional %}
+| {{fr.id}} | {{ a.acceptance | selectattr('fr', 'equalto', fr.id) | map(attribute='id') | join(', ') or '—' }} | {{ (coverage.get(fr.id) or ['—']) | join('; ') }} |
+{% endfor %}
+
+{% if defects %}
+## Дефекты
+
+{% for d in defects %}
+- {{d}}
+{% endfor %}
+{% endif %}
+{% endmacro %}
+
+{% macro security() %}
+# Отчёт о проверке безопасности
+
+## Встроенные меры
+
+| Мера | Реализация |
+|---|---|
+| Аутентификация | JWT HS256, срок 12 ч, ключ из переменной `JWT_KEY` (иначе случайный) |
+| Авторизация | Роли {{ spec.roles | map(attribute='name') | join(', ') }}; права на сущности и записи (`*_own`) из модели |
+| Ограничение частоты | 1200/мин на пользователя, 30/мин на вход |
+| Идемпотентность | `Idempotency-Key` для POST |
+| Проверка входных данных | Атрибуты валидации, ограничения БД, параметризованные запросы (EF Core / Npgsql) |
+| Ошибки | ProblemDetails без стека и деталей СУБД |
+| Секреты | Не хранятся в репозитории (`.env.example` без реальных значений), `.env` в `.gitignore` |
+| Контейнеры | backend и mocks работают от непривилегированного пользователя, health checks |
+| HTTP-заголовки | `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` в nginx |
+
+## Автоматические проверки CI
+
+| Инструмент | Что проверяет | Артефакт |
+|---|---|---|
+| `dotnet list package --vulnerable` | Уязвимые NuGet-зависимости (CVE) | `reports/nuget-vulnerable.txt` |
+| `npm audit` | Уязвимые npm-зависимости | `reports/npm-audit.json` |
+| Trivy (fs, config) | CVE зависимостей, ошибки конфигурации Dockerfile/compose | `reports/trivy.json` |
+| Gitleaks | Секреты в репозитории | `reports/gitleaks.json` |
+| Semgrep | Статический анализ C#/TypeScript | `reports/semgrep.sarif` |
+| Тесты доступа | Каждая роль × каждая сущность, изоляция чужих записей | `TestResults/` |
+
+{% if security_findings %}
+## Результаты
+
+{{ security_findings }}
+{% endif %}
+{% endmacro %}
+
+{% macro traceability() %}
+# Трассировка требований
+
+| ФТ | Требование | Сущности / операции / задачи / экраны | Критерии приёмки |
+|---|---|---|---|
+{% for fr in a.functional %}
+| {{fr.id}} | {{fr.text}} | {{ (coverage.get(fr.id) or ['—']) | reject('match', '^критерий') | join('<br/>') or '—' }} | {{ a.acceptance | selectattr('fr', 'equalto', fr.id) | map(attribute='id') | join(', ') or '—' }} |
+{% endfor %}
+{% endmacro %}
+
+{% macro scorecard() %}
+# Самооценка по критериям жюри
+
+Каждый пункт — ссылка на доказательство в репозитории.
+
+## 1. Качество анализа (20)
+
+- Интерпретация требований и полнота: [системный анализ](01-system-analysis.md) — {{ a.functional | length }} ФТ, {{ a.non_functional | length }} НФТ, {{ a.scenarios | length }} сценариев, все 14 разделов.
+- Критерии приёмки: {{ a.acceptance | length }} в формате Дано/Когда/Тогда — [раздел 13](01-system-analysis.md#13-критерии-приёмки).
+- Неоднозначности: {{ a.ambiguities | length }} с влиянием, вариантами и принятым решением — [раздел 14](01-system-analysis.md#14-допущения-и-открытые-вопросы).
+- Допущения отделены от требований заказчика (поле «Источник» в разделе 5).
+
+## 2. Качество продукта и интерфейса (15)
+
+- Angular Material, проверка соответствия UI Kit линтером (`frontend/scripts/uikit-lint.mjs`) при каждой сборке.
+- Состояния: загрузка, пусто, ошибка, нет доступа (`frontend/src/app/shared/view-state.component.ts`), адаптивная вёрстка.
+{% if spec.has_mobile %}
+- Мобильное приложение: `mobile/` (Kotlin + Compose, Material 3).
+{% endif %}
+{% if spec.demo %}
+- Демо-сценарий из требований исполняется одной кнопкой («Демо-сценарий»){% if verification.get('video') %}; видеозапись прогона — [demo.webm](demo.webm){% endif %}.
+{% endif %}
+
+## 3. Архитектура и разработка (20)
+
+- Слои Domain / Application / Infrastructure / Api — [архитектура](03-architecture.md).
+- API и модель данных согласованы с документацией по построению (единая модель `spec.yaml`).
+- Outbox + Kafka, идемпотентный консьюмер, адаптеры интеграций, `TimeProvider`.
+
+## 4. Тестирование и безопасность (15)
+
+- [Отчёт о тестировании](10-test-report.md), [трассировка](traceability.md), [отчёт о безопасности](11-security-report.md).
+
+## 5. Инфраструктура (10)
+
+- `docker-compose.yml` с health checks, миграции и тестовые данные при старте, `.gitlab-ci.yml`, [инструкция](07-runbook.md).
+
+## 6. Документация (10)
+
+- [Продукт](02-product.md), [архитектура](03-architecture.md), [API](04-api.md) + OpenAPI, [запуск](07-runbook.md), [руководство пользователя](08-user-guide.md), [разработчика](09-dev-guide.md).
+
+## 7. Эффективность конвейера (10)
+
+- [Отчёт конвейера](pipeline-report.md): {{ telemetry.calls }} вызовов модели, {{ telemetry.prompt_tokens + telemetry.completion_tokens }} токенов, повторов генерации — {{ telemetry.retries }}, ручных правок — 0.
+{% endmacro %}
+
+{% macro pipeline_report() %}
+# Отчёт конвейера
+
+| Показатель | Значение |
+|---|---|
+| Вызовов модели | {{ telemetry.calls }} |
+| Повторных попыток генерации | {{ telemetry.retries }} |
+| Входных токенов | {{ telemetry.prompt_tokens }} |
+| Выходных токенов | {{ telemetry.completion_tokens }} |
+| Время работы модели, с | {{ telemetry.llm_seconds }} |
+| Общее время конвейера, с | {{ telemetry.wall_seconds }} |
+| Ручное вмешательство | нет |
+| Сборка | {{ 'успешно' if result.get('build_ok') else 'с ошибками' }} |
+
+## По этапам
+
+| Этап | Вызовов | Повторов | Вход, ток. | Выход, ток. | Время, с |
+|---|---|---|---|---|---|
+{% for name, s in telemetry.by_stage.items() %}
+| {{name}} | {{s.calls}} | {{s.retries}} | {{s.prompt_tokens}} | {{s.completion_tokens}} | {{ s.seconds | round(1) }} |
+{% endfor %}
+
+## Уточняющие вопросы
+
+{% for q in questions %}
+- **{{q.id}}** ({{q.impact}}): {{q.question}} → {{ q.answer or q.default_answer }}
+{% else %}
+- Не потребовались.
+{% endfor %}
+
+Детальный журнал вызовов: [pipeline/llm_calls.jsonl](pipeline/llm_calls.jsonl).
+{% endmacro %}

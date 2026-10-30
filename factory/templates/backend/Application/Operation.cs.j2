@@ -1,0 +1,58 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}; тело метода написано агентом-программистом
+using System.ComponentModel.DataAnnotations;
+using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using NetTopologySuite.Geometries;
+using {{N}}.Application.Abstractions;
+using {{N}}.Application.Common;
+using {{N}}.Application.Dtos;
+using {{N}}.Application.Events;
+using {{N}}.Application.Integrations;
+using {{N}}.Application.Services;
+using {{N}}.Domain.Entities;
+using ValidationException = {{N}}.Application.Common.ValidationException;
+{% for u in logic.usings %}
+using {{u}};
+{% endfor %}
+
+namespace {{N}}.Application.Operations;
+{% if op.input %}
+
+/// <summary>{{op.title}}: запрос.</summary>
+public sealed class {{op.name}}Request
+{
+{% for f in vm.inputs %}
+{% for a in f.attrs %}
+    {{a}}
+{% endfor %}
+    public {{f.req_type}} {{f.Name}} { get; set; }
+
+{% endfor %}
+}
+{% endif %}
+{% if vm.response_record %}
+
+/// <summary>{{op.title}}: ответ.</summary>
+public sealed record {{op.name}}Response({% for f in op.output %}{{payload_type(f)}} {{pascal(f.name)}}{% if not loop.last %}, {% endif %}{% endfor %});
+{% endif %}
+
+/// <summary>{{op.id}} {{op.title}}. Покрывает: {{ op.covers | join(', ') }}.</summary>
+/// <remarks>{{op.description}}</remarks>
+public sealed class {{op.name}}Handler(
+    IAppDbContext db,
+    ICurrentUser currentUser,
+    TimeProvider clock,
+    IEventPublisher events,
+    IGeoService geo{% for e in spec.entities %},
+    {{e.name}}Service {{camel(e.name)}}Service{% endfor %}{% for i in spec.integrations %},
+    I{{i.name}} {{camel(i.name)}}{% endfor %})
+{
+    public async Task<{{vm.return_type}}> HandleAsync({{vm.signature}})
+    {
+{{logic.body | indent(8, true)}}
+    }
+{% if logic.helpers %}
+
+{{logic.helpers | indent(4, true)}}
+{% endif %}
+}

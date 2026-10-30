@@ -1,0 +1,325 @@
+{
+ "items": [
+  {
+   "siteCode": "MS-100",
+   "title": "ПВЗ Тверская ул. 84",
+   "kind": "pickup_point",
+   "address": "Москва, Тверская ул., д. 10",
+   "location": "POINT (37.530170 55.738860)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-101",
+   "title": "ПВЗ Ленинский пр-т 75",
+   "kind": "pickup_point",
+   "address": "Москва, Ленинский пр-т, д. 117",
+   "location": "POINT (37.518826 55.798553)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-102",
+   "title": "ПВЗ Профсоюзная ул. 56",
+   "kind": "warehouse",
+   "address": "Москва, Профсоюзная ул., д. 9",
+   "location": "POINT (37.507499 55.760892)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-103",
+   "title": "ПВЗ Варшавское ш. 8",
+   "kind": "pickup_point",
+   "address": "Москва, Варшавское ш., д. 29",
+   "location": "POINT (37.610209 55.728880)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-104",
+   "title": "ПВЗ Каширское ш. 8",
+   "kind": "warehouse",
+   "address": "Москва, Каширское ш., д. 7",
+   "location": "POINT (37.616599 55.775675)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-105",
+   "title": "ПВЗ ул. Миклухо-Маклая 110",
+   "kind": "pickup_point",
+   "address": "Москва, ул. Миклухо-Маклая, д. 38",
+   "location": "POINT (37.509317 55.817151)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-106",
+   "title": "ПВЗ Новослободская ул. 74",
+   "kind": "warehouse",
+   "address": "Москва, Новослободская ул., д. 72",
+   "location": "POINT (37.608137 55.750297)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-107",
+   "title": "ПВЗ Щёлковское ш. 75",
+   "kind": "pickup_point",
+   "address": "Москва, Щёлковское ш., д. 48",
+   "location": "POINT (37.536145 55.797935)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-108",
+   "title": "ПВЗ Тверская ул. 73",
+   "kind": "pickup_point",
+   "address": "Москва, Тверская ул., д. 80",
+   "location": "POINT (37.642422 55.711692)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-109",
+   "title": "ПВЗ Ленинский пр-т 55",
+   "kind": "warehouse",
+   "address": "Москва, Ленинский пр-т, д. 60",
+   "location": "POINT (37.636080 55.724715)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-110",
+   "title": "ПВЗ Профсоюзная ул. 39",
+   "kind": "pickup_point",
+   "address": "Москва, Профсоюзная ул., д. 102",
+   "location": "POINT (37.590637 55.770267)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-111",
+   "title": "ПВЗ Варшавское ш. 11",
+   "kind": "warehouse",
+   "address": "Москва, Варшавское ш., д. 68",
+   "location": "POINT (37.655966 55.721572)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-112",
+   "title": "ПВЗ Каширское ш. 58",
+   "kind": "warehouse",
+   "address": "Москва, Каширское ш., д. 78",
+   "location": "POINT (37.568695 55.759414)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-113",
+   "title": "ПВЗ ул. Миклухо-Маклая 54",
+   "kind": "pickup_point",
+   "address": "Москва, ул. Миклухо-Маклая, д. 97",
+   "location": "POINT (37.523613 55.817621)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-114",
+   "title": "ПВЗ Новослободская ул. 54",
+   "kind": "pickup_point",
+   "address": "Москва, Новослободская ул., д. 86",
+   "location": "POINT (37.686654 55.741047)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-115",
+   "title": "ПВЗ Щёлковское ш. 102",
+   "kind": "warehouse",
+   "address": "Москва, Щёлковское ш., д. 44",
+   "location": "POINT (37.611615 55.709314)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-116",
+   "title": "ПВЗ Тверская ул. 75",
+   "kind": "warehouse",
+   "address": "Москва, Тверская ул., д. 9",
+   "location": "POINT (37.618874 55.783435)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-117",
+   "title": "ПВЗ Ленинский пр-т 61",
+   "kind": "pickup_point",
+   "address": "Москва, Ленинский пр-т, д. 8",
+   "location": "POINT (37.688936 55.800796)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-118",
+   "title": "ПВЗ Профсоюзная ул. 74",
+   "kind": "warehouse",
+   "address": "Москва, Профсоюзная ул., д. 37",
+   "location": "POINT (37.561921 55.787739)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-119",
+   "title": "ПВЗ Варшавское ш. 45",
+   "kind": "pickup_point",
+   "address": "Москва, Варшавское ш., д. 60",
+   "location": "POINT (37.677408 55.785995)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-120",
+   "title": "ПВЗ Каширское ш. 64",
+   "kind": "pickup_point",
+   "address": "Москва, Каширское ш., д. 28",
+   "location": "POINT (37.622184 55.742656)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-121",
+   "title": "ПВЗ ул. Миклухо-Маклая 32",
+   "kind": "warehouse",
+   "address": "Москва, ул. Миклухо-Маклая, д. 51",
+   "location": "POINT (37.525868 55.792188)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-122",
+   "title": "ПВЗ Новослободская ул. 22",
+   "kind": "warehouse",
+   "address": "Москва, Новослободская ул., д. 52",
+   "location": "POINT (37.599301 55.810018)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-123",
+   "title": "ПВЗ Щёлковское ш. 105",
+   "kind": "warehouse",
+   "address": "Москва, Щёлковское ш., д. 111",
+   "location": "POINT (37.676677 55.765933)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-124",
+   "title": "ПВЗ Тверская ул. 46",
+   "kind": "warehouse",
+   "address": "Москва, Тверская ул., д. 30",
+   "location": "POINT (37.641279 55.766026)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-125",
+   "title": "ПВЗ Ленинский пр-т 30",
+   "kind": "pickup_point",
+   "address": "Москва, Ленинский пр-т, д. 2",
+   "location": "POINT (37.535244 55.718111)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-126",
+   "title": "ПВЗ Профсоюзная ул. 34",
+   "kind": "warehouse",
+   "address": "Москва, Профсоюзная ул., д. 1",
+   "location": "POINT (37.617825 55.758196)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-127",
+   "title": "ПВЗ Варшавское ш. 79",
+   "kind": "warehouse",
+   "address": "Москва, Варшавское ш., д. 17",
+   "location": "POINT (37.606918 55.717481)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-128",
+   "title": "ПВЗ Каширское ш. 80",
+   "kind": "pickup_point",
+   "address": "Москва, Каширское ш., д. 59",
+   "location": "POINT (37.603098 55.782859)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-129",
+   "title": "ПВЗ ул. Миклухо-Маклая 112",
+   "kind": "warehouse",
+   "address": "Москва, ул. Миклухо-Маклая, д. 51",
+   "location": "POINT (37.655994 55.807944)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-130",
+   "title": "ПВЗ Новослободская ул. 82",
+   "kind": "warehouse",
+   "address": "Москва, Новослободская ул., д. 8",
+   "location": "POINT (37.520707 55.747877)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-131",
+   "title": "ПВЗ Щёлковское ш. 57",
+   "kind": "pickup_point",
+   "address": "Москва, Щёлковское ш., д. 15",
+   "location": "POINT (37.696934 55.722873)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-132",
+   "title": "ПВЗ Тверская ул. 1",
+   "kind": "pickup_point",
+   "address": "Москва, Тверская ул., д. 69",
+   "location": "POINT (37.510515 55.740806)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-133",
+   "title": "ПВЗ Ленинский пр-т 4",
+   "kind": "pickup_point",
+   "address": "Москва, Ленинский пр-т, д. 112",
+   "location": "POINT (37.572722 55.712176)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-134",
+   "title": "ПВЗ Профсоюзная ул. 82",
+   "kind": "warehouse",
+   "address": "Москва, Профсоюзная ул., д. 45",
+   "location": "POINT (37.575246 55.724954)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-135",
+   "title": "ПВЗ Варшавское ш. 15",
+   "kind": "warehouse",
+   "address": "Москва, Варшавское ш., д. 60",
+   "location": "POINT (37.594830 55.772274)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-136",
+   "title": "ПВЗ Каширское ш. 19",
+   "kind": "pickup_point",
+   "address": "Москва, Каширское ш., д. 96",
+   "location": "POINT (37.562370 55.757647)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-137",
+   "title": "ПВЗ ул. Миклухо-Маклая 107",
+   "kind": "pickup_point",
+   "address": "Москва, ул. Миклухо-Маклая, д. 67",
+   "location": "POINT (37.552951 55.741116)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-138",
+   "title": "ПВЗ Новослободская ул. 68",
+   "kind": "warehouse",
+   "address": "Москва, Новослободская ул., д. 19",
+   "location": "POINT (37.690197 55.702771)",
+   "openHours": "09:00-21:00"
+  },
+  {
+   "siteCode": "MS-139",
+   "title": "ПВЗ Щёлковское ш. 98",
+   "kind": "warehouse",
+   "address": "Москва, Щёлковское ш., д. 83",
+   "location": "POINT (37.682829 55.782808)",
+   "openHours": "09:00-21:00"
+  }
+ ],
+ "total": 40
+}

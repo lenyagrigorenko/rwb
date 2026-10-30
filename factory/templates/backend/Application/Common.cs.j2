@@ -1,0 +1,67 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}
+namespace {{N}}.Application.Common;
+
+/// <summary>Ошибка прикладного уровня, преобразуется в ProblemDetails (RFC 9457).</summary>
+public class AppException(string message, int status, string code) : Exception(message)
+{
+    public int Status { get; } = status;
+    public string Code { get; } = code;
+}
+
+public sealed class NotFoundException(string message) : AppException(message, 404, "not_found");
+
+public sealed class ForbiddenException(string message = "Недостаточно прав для выполнения операции")
+    : AppException(message, 403, "forbidden");
+
+public sealed class ConflictException(string message) : AppException(message, 409, "conflict");
+
+/// <summary>Нарушение бизнес-правила (запрос корректен, но операция недопустима).</summary>
+public sealed class BusinessRuleException(string message) : AppException(message, 422, "business_rule");
+
+public sealed class ValidationException(IDictionary<string, string[]> errors, string message = "Ошибка валидации")
+    : AppException(message, 400, "validation")
+{
+    public IDictionary<string, string[]> Errors { get; } = errors;
+
+    public static ValidationException For(string field, string error) =>
+        new(new Dictionary<string, string[]> { [field] = [error] });
+}
+
+/// <summary>Страница результатов.</summary>
+public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Total, int Page, int PageSize);
+
+/// <summary>Параметры списка: пагинация, сортировка, поиск.</summary>
+public sealed class ListQuery
+{
+    public int Page { get; set; } = 1;
+    public int PageSize { get; set; } = 20;
+    public string? Sort { get; set; }
+    public string? Dir { get; set; }
+    public string? Q { get; set; }
+}
+
+/// <summary>Матрица прав доступа ролей к сущностям (из IR).</summary>
+public static class Permissions
+{
+    private static readonly Dictionary<(string Role, string Entity), string[]> Matrix = new()
+    {
+{% for p in spec.permissions %}
+        [("{{p.role}}", "{{p.entity}}")] = [{% for a in p.actions %}"{{a}}"{% if not loop.last %}, {% endif %}{% endfor %}],
+{% endfor %}
+    };
+
+    public static readonly string[] Roles = [{% for r in spec.roles %}"{{r.name}}"{% if not loop.last %}, {% endif %}{% endfor %}];
+
+    public static bool Can(string? role, string entity, string action) =>
+        role is not null && Matrix.TryGetValue((role, entity), out var actions) && actions.Contains(action);
+}
+
+/// <summary>Номер записи для системных полей: ПРЕФИКС-ГГММДД-NNN (ограничен длиной поля).</summary>
+public static class AutoNumber
+{
+    public static string Next(string prefix, int maxLength)
+    {
+        var value = $"{prefix}-{DateTime.UtcNow:yyMMdd}-{Random.Shared.Next(100, 1000)}";
+        return value.Length <= maxLength ? value : value[^maxLength..];
+    }
+}

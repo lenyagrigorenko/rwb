@@ -1,0 +1,31 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}; тело метода написано агентом-программистом
+using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using {{N}}.Application.Abstractions;
+using {{N}}.Application.Common;
+using {{N}}.Application.Events;
+using {{N}}.Application.Integrations;
+using {{N}}.Domain.Entities;
+{% for u in logic.usings %}
+using {{u}};
+{% endfor %}
+
+namespace {{N}}.Application.Jobs;
+
+/// <summary>{{job.title}}. Покрывает: {{ job.covers | join(', ') }}.</summary>
+/// <remarks>{{job.description}}</remarks>
+public sealed class {{job.name}}Job(IAppDbContext db, TimeProvider clock, IEventPublisher events, IGeoService geo{% for i in spec.integrations %}, I{{i.name}} {{camel(i.name)}}{% endfor %}) : IJob
+{
+    public string Name => "{{job.name}}";
+
+    public TimeSpan Interval => TimeSpan.FromSeconds({{job.interval_seconds}});
+
+    public async Task RunAsync(CancellationToken ct)
+    {
+{{logic.body | indent(8, true)}}
+    }
+{% if logic.helpers %}
+
+{{logic.helpers | indent(4, true)}}
+{% endif %}
+}

@@ -1,0 +1,72 @@
+# {{spec.product_name}}
+
+{{a.summary}}
+
+Прототип сгенерирован агентским конвейером из бизнес-требований: системный анализ, модель данных, API, backend,
+web-интерфейс{% if spec.has_mobile %}, мобильное приложение{% endif %}, тесты, Docker, CI/CD и документация согласованы — все
+они построены из одной модели приложения (`spec.yaml`).
+
+## Быстрый старт
+
+Требуется Docker 24+ с Compose v2.
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+```
+
+| Что | Адрес |
+|---|---|
+| Web-интерфейс | http://localhost:8088 |
+| API | http://localhost:8080/api/v1 |
+| OpenAPI / документация API | http://localhost:8080/openapi/v1.json, http://localhost:8080/scalar |
+| Проверка готовности | http://localhost:8080/health/ready |
+
+Демо-пользователи (пароль — `DEMO_PASSWORD` из `.env`, по умолчанию `Demo2026!`):
+
+| Логин | Роль |
+|---|---|
+{% for u in users %}
+| `{{u.login}}` | {{ role_title(u.role) }} |
+{% endfor %}
+
+{% if spec.demo %}
+**Демонстрационный сценарий:** войдите как `{{ spec.roles | selectattr('name', 'in', admin_roles) | map(attribute='demo_login') | first }}`,
+откройте «Демо-сценарий» и нажмите «Запустить» — шаги из требований выполнятся через API, на карте и в журнале событий.
+{% endif %}
+
+## Состав
+
+| Каталог | Содержимое |
+|---|---|
+| `backend/` | ASP.NET Core (.NET 10): Api, Application, Domain, Infrastructure, Tests |
+| `frontend/` | Angular 20.1 + Angular Material: административный интерфейс |
+{% if spec.has_mobile %}
+| `mobile/` | Android (Kotlin 2.2, Jetpack Compose) |
+{% endif %}
+{% if spec.integrations %}
+| `mocks/` | Mock-сервис внешних интеграций |
+{% endif %}
+| `docs/` | Системный анализ, архитектура, API, модель данных, руководства, отчёты |
+| `spec.yaml` | Модель приложения (IR) — источник истины для генерации |
+| `.gitlab-ci.yml` | Сборка, тесты, анализ безопасности, публикация образов |
+
+## Документация
+
+| Документ | Файл |
+|---|---|
+| Системный анализ | [docs/01-system-analysis.md](docs/01-system-analysis.md) |
+| Продуктовое описание | [docs/02-product.md](docs/02-product.md) |
+| Архитектура | [docs/03-architecture.md](docs/03-architecture.md) |
+| API | [docs/04-api.md](docs/04-api.md) |
+| Модель данных | [docs/05-data-model.md](docs/05-data-model.md) |
+| События (AsyncAPI) | [docs/06-events.md](docs/06-events.md) |
+| Инструкция по запуску | [docs/07-runbook.md](docs/07-runbook.md) |
+| Руководство пользователя | [docs/08-user-guide.md](docs/08-user-guide.md) |
+| Руководство разработчика | [docs/09-dev-guide.md](docs/09-dev-guide.md) |
+| Отчёт о тестировании | [docs/10-test-report.md](docs/10-test-report.md) |
+| Отчёт о безопасности | [docs/11-security-report.md](docs/11-security-report.md) |
+| Известные ограничения | [docs/12-limitations.md](docs/12-limitations.md) |
+| Трассировка требований | [docs/traceability.md](docs/traceability.md) |
+| Оценка по критериям | [docs/jury-scorecard.md](docs/jury-scorecard.md) |
+| Отчёт конвейера (токены, время, попытки) | [docs/pipeline-report.md](docs/pipeline-report.md) |

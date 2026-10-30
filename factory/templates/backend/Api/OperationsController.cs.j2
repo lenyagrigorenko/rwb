@@ -1,0 +1,25 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using {{N}}.Application.Dtos;
+using {{N}}.Application.Operations;
+
+namespace {{N}}.Api.Controllers;
+
+/// <summary>Бизнес-операции (из IR: operations).</summary>
+[ApiController]
+[Authorize]
+[Route("api/v1")]
+[Tags("Операции")]
+public sealed class OperationsController : ControllerBase
+{
+{% for op in ops %}
+    /// <summary>{{op.op.id}} {{op.op.title}}</summary>
+    /// <remarks>{{op.op.description}} Покрывает: {{ op.op.covers | join(', ') }}.{% if op.op.idempotent %} Поддерживает заголовок Idempotency-Key.{% endif %}</remarks>
+    [Http{{op.op.method|capitalize}}("{{op.route}}")]
+    [Authorize(Roles = "{{ op.op.roles | join(',') }}")]
+    public Task<{{op.return_type}}> {{op.op.name}}([FromServices] {{op.op.name}}Handler handler{{op.action_params}}, CancellationToken ct) =>
+        handler.HandleAsync({{op.call_args}}ct);
+
+{% endfor %}
+}
