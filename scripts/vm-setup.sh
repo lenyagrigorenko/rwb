@@ -45,14 +45,23 @@ done
 docker volume create nuget-cache >/dev/null
 docker volume create gradle-cache >/dev/null
 
-echo "== Сборщик Android (необязательно)"
-if docker image inspect factory/android-builder:1 >/dev/null 2>&1; then
+echo "== Сборщик Android"
+# Готовый образ с прогретым кэшем Gradle собирается в GitHub Actions (.github/workflows/android-builder.yml):
+# с ним APK собирается офлайн, без доступа к dl.google.com.
+ANDROID_IMAGE="$(grep -E '^ANDROID_BUILDER_IMAGE=' factory/.env | cut -d= -f2- || true)"
+ANDROID_IMAGE="${ANDROID_IMAGE:-ghcr.io/lenyagrigorenko/factory-android-builder:1}"
+if docker pull -q "$ANDROID_IMAGE"; then
+  docker tag "$ANDROID_IMAGE" factory/android-builder:1
+  set_env FACTORY_APK on
+  set_env FACTORY_GRADLE_OFFLINE 1
+  echo "  взят готовый образ $ANDROID_IMAGE (офлайн-сборка APK)"
+elif docker image inspect factory/android-builder:1 >/dev/null 2>&1; then
   echo "  образ factory/android-builder:1 уже есть"
 elif docker build -q -t factory/android-builder:1 factory/docker/android-builder; then
-  echo "  образ собран"
+  echo "  образ собран локально"
 else
-  echo "  НЕ СОБРАН: нет доступа к dl.google.com / services.gradle.org. APK отключён (FACTORY_APK=off)."
-  echo "  Можно перенести готовый образ с ноутбука — DEPLOY.md, раздел «Android без доступа к Google»."
+  echo "  НЕ ПОЛУЧЕН: нет $ANDROID_IMAGE и нет доступа к dl.google.com. APK отключён (FACTORY_APK=off)."
+  echo "  См. DEPLOY.md, раздел 9.1."
   set_env FACTORY_APK off
 fi
 
@@ -61,7 +70,7 @@ echo "== Прогрев кэшей на эталонной модели (NuGet, 
 import asyncio, os, yaml
 from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv(".env")
+load_dotenv(".env", override=True)
 from factory.ir import AppSpec
 from factory.gen import backend, frontend, infra, mobile
 from factory import builder

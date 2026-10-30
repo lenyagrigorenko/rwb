@@ -1,0 +1,57 @@
+# Собирает образ сборщика Android с прогретым кэшем Gradle и публикует его в ghcr.io.
+# Нужен, если с сервера нет доступа к dl.google.com: сервер скачивает готовый образ и собирает APK офлайн.
+name: android-builder
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - factory/docker/android-builder/**
+      - factory/templates/mobile/**
+      - .github/workflows/android-builder.yml
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Сгенерировать проект для прогрева кэша
+        working-directory: factory
+        run: |
+          uv sync -q
+          uv run python -c "
+          import yaml
+          from pathlib import Path
+          from factory.ir import AppSpec
+          from factory.gen import mobile
+          spec = AppSpec.model_validate(yaml.safe_load(open('../cases/case1/golden_spec.yaml')))
+          mobile.generate(spec, Path('../out/_warmup'))
+          "
+          cp -r ../out/_warmup/mobile docker/android-builder/warm
+
+      - name: Имя образа
+        id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/factory-android-builder:1" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Базовый сборщик (SDK + Gradle)
+        run: docker build -t factory/android-builder:1 factory/docker/android-builder
+
+      - name: Прогрев кэша Gradle и публикация
+        run: |
+          docker build -f factory/docker/android-builder/Dockerfile.warm -t ${{ steps.name.outputs.image }} factory/docker/android-builder
+          docker push ${{ steps.name.outputs.image }}
+          echo "Опубликовано: ${{ steps.name.outputs.image }}" >> "$GITHUB_STEP_SUMMARY"

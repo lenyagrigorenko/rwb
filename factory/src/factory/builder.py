@@ -72,7 +72,9 @@ async def build_apk(mobile: Path, api_url: str | None = None, low_memory: bool =
                  "-Pkotlin.compiler.execution.strategy=in-process"]
     if api_url:
         args.append(f"-PapiUrl={api_url}")
-    code, out = await run(["docker", "run", "--rm", "-v", f"{mobile.resolve()}:/src", "-v", "gradle-cache:/cache",
+    # Офлайн-режим: зависимости уже внутри образа (Dockerfile.warm), отдельный том кэша не нужен.
+    cache = [] if os.environ.get("FACTORY_GRADLE_OFFLINE") == "1" else ["-v", "gradle-cache:/cache"]
+    code, out = await run(["docker", "run", "--rm", "-v", f"{mobile.resolve()}:/src", *cache,
                            ANDROID_BUILDER, *args], timeout=1800)
     apk = mobile / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk"
     return code == 0 and apk.exists(), apk if apk.exists() else None, out[-3000:]

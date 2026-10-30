@@ -1,0 +1,9 @@
+# Сборщик Android с прогретым кэшем Gradle: все зависимости шаблона мобильного приложения уже внутри,
+# поэтому сборка APK работает офлайн (FACTORY_GRADLE_OFFLINE=1) — без доступа к dl.google.com.
+ARG BASE=factory/android-builder:1
+FROM ${BASE}
+LABEL org.opencontainers.image.source="https://github.com/lenyagrigorenko/rwb" \
+      org.opencontainers.image.description="Android SDK 35 + Gradle 8.14 + прогретый кэш зависимостей фабрики"
+COPY warm /warm
+RUN cd /warm && gradle assembleDebug --no-daemon -q && gradle assembleDebug --no-daemon -q --offline \
+ && rm -rf /warm

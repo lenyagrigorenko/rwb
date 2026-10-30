@@ -50,10 +50,50 @@ def normalize_enums(spec: AppSpec) -> list[str]:
     return fixes
 
 
+LAT = ("lat", "latitude")
+LON = ("lon", "lng", "longitude")
+
+
+def _routes_from_coordinates(spec: AppSpec) -> list[str]:
+    """Demo steps that post fixed coordinates to a position operation become route legs over the geo layer:
+    fixed coordinates rarely hit a zone, a planned route always does."""
+    geo_layers = [e.name for e in spec.entities if e.geo_fields]
+    if not geo_layers:
+        return []
+    ops = {o.name: o for o in spec.operations}
+    fixes = []
+    entered = False
+    for st in spec.demo.steps:
+        op = ops.get(st.operation or "")
+        if not op or st.action not in ("operation", "route"):
+            continue
+        names = {f.name.lower() for f in op.input}
+        if not (names & set(LAT) and names & set(LON)):
+            continue
+        title = st.title.lower()
+        if "leg" in st.args and st.action == "route":
+            entered = entered or st.args["leg"] >= 1
+            continue
+        if re.search(r"покида|выезж|выезд|уезжа", title):
+            leg = 3
+        elif re.search(r"друг|втор|переезж|сосед|смен", title):
+            leg = 2
+        elif re.search(r"въезж|въезд|заезж|прибыв|приезж|в зон", title):
+            leg = 2 if entered else 1
+        else:
+            leg = 0
+        entered = entered or leg >= 1
+        st.action = "route"
+        st.args = {"leg": leg, "zones": 2}
+        fixes.append(f"демо {st.id}: координаты заменены движением по маршруту (участок {leg})")
+    return fixes
+
+
 def autofix(spec: AppSpec) -> list[str]:
     """Deterministic repairs that do not need a model call. Returns a log of fixes."""
     fixes: list[str] = normalize_enums(spec)
     if spec.demo:
+        fixes += _routes_from_coordinates(spec)
         events = {e.name for e in spec.events}
         before = len(spec.demo.steps)
         spec.demo.steps = [st for st in spec.demo.steps if st.action != "expect" or st.args.get("event") in events]

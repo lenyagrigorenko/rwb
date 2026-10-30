@@ -246,7 +246,8 @@ public sealed class DemoScenarioRunner(IServiceScopeFactory scopes, IHttpClientF
     private static string Summarize(JsonNode? node)
     {
         if (node is not JsonObject obj) return "OK";
-        return string.Join(", ", obj.Where(kv => kv.Value is JsonValue && kv.Key != "id").Take(4).Select(kv => $"{kv.Key}: {kv.Value}"));
+        return string.Join(", ", obj.Where(kv => kv.Value is JsonValue && kv.Key != "id" && !Guid.TryParse(kv.Value!.ToString(), out _))
+            .Take(4).Select(kv => $"{kv.Key}: {kv.Value}"));
     }
 
     private async Task<string> ResolvePathAsync(string template, Guid userId, Dictionary<string, string> vars, CancellationToken ct)

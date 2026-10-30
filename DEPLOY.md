@@ -13,15 +13,14 @@
 |---|---|
 | VM | Linux x86_64, Docker 24+ с плагином compose, пользователь в группе `docker` |
 | Ресурсы | от 8 ГБ RAM (лучше 16), от 40 ГБ свободного диска, 4+ CPU |
-| Сеть VM | доступ к `10.10.10.10:4000` (модель) и в интернет к Docker Hub, mcr.microsoft.com, api.nuget.org, registry.npmjs.org, dl.google.com, repo.maven.apache.org, services.gradle.org |
-| Доступ с ноутбука | SSH `team23@85.143.113.230 -p 10023` |
+| Сеть VM | доступ к `10.10.10.10:4000` (модель), GitHub, Docker-реестрам (Docker Hub, mcr.microsoft.com, ghcr.io), api.nuget.org, registry.npmjs.org. Google (dl.google.com) **не нужен** — сборщик Android берётся готовым из ghcr.io |
+| Доступ с ноутбука | SSH `team23@85.143.113.230 -p 10023` (VPN на ноутбуке выключить) |
 | Ключ модели | выдан организаторами (`sk-...`) |
 
-Если с Mac SSH «зависает» на приветствии — мешает VPN. Пустите адрес VM напрямую:
-правило **direct** для `85.143.113.230` в Happ (Маршрутизация), или (шлюз Wi-Fi/раздачи подставьте свой):
+Подключение (VPN выключен):
 
 ```bash
-sudo route -n delete -host 85.143.113.230; sudo route -n add -host 85.143.113.230 172.20.10.1
+ssh -p 10023 team23@85.143.113.230
 ```
 
 ## 0.1. Мало памяти (4 ГБ)
@@ -58,18 +57,28 @@ df -h ~ && free -g && nproc
 
 Ожидаемо: `model:200`, `nuget:200`, `npm:200`. Если интернета нет — см. раздел 9.
 
-## 2. Скопировать код с ноутбука
+## 2. Код: через GitHub
 
-На Mac, из каталога `/Users/lenya/rwb`:
+На Mac (из `/Users/lenya/rwb`) отправить последние изменения:
 
 ```bash
-rsync -az --info=progress2 -e "ssh -p 10023" \
-  --exclude 'out/' --exclude 'runs/' --exclude '.venv/' --exclude 'node_modules/' \
-  --exclude '.env' --exclude '*.apk' --exclude '.gradle/' --exclude 'bin/' --exclude 'obj/' \
-  ./ team23@85.143.113.230:~/rwb/
+git add -A && git commit -m "Фабрика: обновление" && git push
 ```
 
-(Когда появится GitLab — вместо rsync: `git clone` репозитория фабрики, см. раздел 8.)
+На VM — первый раз:
+
+```bash
+git clone https://github.com/lenyagrigorenko/rwb.git ~/rwb
+```
+
+и далее при каждом обновлении:
+
+```bash
+cd ~/rwb && git pull
+```
+
+Если репозиторий приватный — git спросит логин и токен GitHub (Settings → Developer settings → Personal access
+tokens, право `repo`). `factory/.env`, `out/`, `runs/` в git не попадают — `.env` создаётся на VM (раздел 3).
 
 ## 3. Ключ модели: локальный API вместо OpenRouter
 
@@ -160,10 +169,9 @@ ssh -p 10023 -L 8000:localhost:8000 team23@85.143.113.230
 ## 8. GitLab
 
 1. В локальном GitLab создайте два проекта: `factory` (сам конвейер) и `spb-parking-assistant` (результат кейса 1).
-2. Фабрика:
+2. Фабрика (репозиторий уже есть, добавить второй remote):
    ```bash
-   cd ~/rwb && git init -b main && git add . && git commit -m "Фабрика приложений"
-   git remote add origin <URL проекта factory> && git push -u origin main
+   cd ~/rwb && git remote add gitlab <URL проекта factory> && git push gitlab main
    ```
 3. Результат кейса 1:
    ```bash
@@ -192,28 +200,28 @@ cd /Users/lenya/rwb/factory && uv run factory doctor && uv run factory serve
 
 ## 9.1. Android без доступа к Google
 
-Если `vm-setup.sh` пишет «Сборщик Android НЕ СОБРАН» (таймаут к `dl.google.com` / `services.gradle.org`),
-фабрика работает без APK (`FACTORY_APK=off`). Чтобы вернуть APK, перенесите с ноутбука готовый образ и кэш Gradle
-(зависимости у всех генерируемых приложений одинаковые, поэтому кэша с ноутбука достаточно).
+С VM нет доступа к `dl.google.com`, поэтому сборщик Android готовится в **GitHub Actions** и публикуется в ghcr.io:
+образ с Android SDK, Gradle и **уже скачанными зависимостями** мобильного шаблона. VM его скачивает, и APK собирается
+офлайн. Зависимости у всех генерируемых приложений одинаковые (меняется только код экранов), поэтому кэша достаточно.
 
-На Mac (из `/Users/lenya/rwb`):
+1. Отправить код на GitHub (`git push`) — workflow `.github/workflows/android-builder.yml` запустится сам
+   (или вручную: GitHub → Actions → android-builder → Run workflow). Длится ~10 минут.
+2. Сделать образ доступным VM: GitHub → профиль → Packages → `factory-android-builder` → Package settings →
+   Change visibility → **Public**. (Либо на VM: `docker login ghcr.io -u lenyagrigorenko` с токеном, право `read:packages`.)
+3. На VM: `./scripts/vm-setup.sh` — скрипт сам скачает `ghcr.io/lenyagrigorenko/factory-android-builder:1`,
+   переименует в `factory/android-builder:1` и включит `FACTORY_APK=on`, `FACTORY_GRADLE_OFFLINE=1`.
+
+Проверка вручную:
 
 ```bash
-docker save factory/android-builder:1 | gzip > android-builder.tar.gz
-docker run --rm -v gradle-cache:/v -v "$PWD":/b alpine tar czf /b/gradle-cache.tgz -C /v .
-scp -P 10023 android-builder.tar.gz gradle-cache.tgz team23@85.143.113.230:~/
+docker pull ghcr.io/lenyagrigorenko/factory-android-builder:1
+docker tag ghcr.io/lenyagrigorenko/factory-android-builder:1 factory/android-builder:1
 ```
 
-На VM:
-
-```bash
-gunzip -c ~/android-builder.tar.gz | docker load
-docker volume create gradle-cache
-docker run --rm -v gradle-cache:/v -v ~/:/b alpine tar xzf /b/gradle-cache.tgz -C /v
-cd ~/rwb/factory
-sed -i 's/^FACTORY_APK=.*/FACTORY_APK=on/' .env
-grep -q '^FACTORY_GRADLE_OFFLINE=' .env || echo 'FACTORY_GRADLE_OFFLINE=1' >> .env
-```
+Запасной путь (если ghcr.io с VM недоступен): на Mac с выключенным VPN
+`docker save factory/android-builder:warm-test | gzip > android.tgz && scp -P 10023 android.tgz team23@85.143.113.230:~/`,
+на VM `gunzip -c ~/android.tgz | docker load && docker tag factory/android-builder:warm-test factory/android-builder:1`,
+в `factory/.env`: `FACTORY_APK=on`, `FACTORY_GRADLE_OFFLINE=1`.
 
 ## 9.2. Запуск через sudo
 
@@ -229,14 +237,14 @@ docker ps                          # должно работать без sudo
 
 | Симптом | Причина и решение |
 |---|---|
-| SSH висит на приветствии | VPN на Mac — маршрут в обход (раздел 0) |
+| SSH висит на приветствии | на Mac включён VPN — выключить |
 | `doctor`: модель недоступна | неверный ключ/адрес в `.env`; проверить `curl .../v1/models` с ключом |
 | reasoning tokens > 0, медленно | `LLM_THINKING=soft` |
 | 429 / таймауты модели | уменьшить `LLM_CONCURRENCY` до 2, сообщить организаторам |
 | сборка .NET: restore error | нет доступа к api.nuget.org; прогреть кэш (раздел 9) |
 | стенд не поднимается: порт занят | `docker ps`, остановить старые стенды: `cd ~/rwb/out/<slug> && docker compose down` |
-| `vm-setup.sh`: exit code 28 на «Сборщик Android» | таймаут к dl.google.com — раздел 9.1 (скрипт продолжит без APK) |
-| APK не собирается | нет образа `factory/android-builder:1` — `docker build -t factory/android-builder:1 factory/docker/android-builder`; при 4 ГБ без swap — `FACTORY_APK=off` |
+| `vm-setup.sh`: exit code 28 на «Сборщик Android» | таймаут к dl.google.com — готовый образ из ghcr.io (раздел 9.1) |
+| APK не собирается | нет образа `factory/android-builder:1` — раздел 9.1; при 4 ГБ без swap — `FACTORY_APK=off` |
 | OOM / контейнеры падают с кодом 137 | мало памяти: добавить swap (раздел 0.1), остановить лишние стенды `docker ps` |
 | нет видео демо | нет образа Playwright — `docker pull mcr.microsoft.com/playwright:v1.64.1-noble` |
 | интерфейс не открывается снаружи | порт 8000 закрыт — SSH-туннель (раздел 6) или попросить организаторов открыть порт |

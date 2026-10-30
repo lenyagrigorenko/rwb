@@ -8,3 +8,7 @@ node_modules/
 bin/
 obj/
 .DS_Store
+.run.lock
+*.apk
+.gradle/
+factory/docker/android-builder/warm/

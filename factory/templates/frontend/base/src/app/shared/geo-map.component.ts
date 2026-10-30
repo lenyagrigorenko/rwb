@@ -62,9 +62,14 @@ export class GeoMapComponent implements AfterViewInit, OnDestroy {
     const color = PALETTE[APP_SPEC.entities.findIndex((e) => e.name === name) % PALETTE.length];
     const title = APP_SPEC.entities.find((e) => e.name === name)?.title ?? name;
     this.overlays.get(name)?.remove();
+    // Немного точек — «живые» объекты (крупные, с подписью); много — история/трек (мелкие, без подписей).
+    const points = fc.features.filter((f) => f.geometry?.type === 'Point').length;
+    const few = points <= 20;
     const layer = L.geoJSON(fc, {
       style: () => ({ color, weight: 5, opacity: 0.75 }),
-      pointToLayer: (_f, latlng) => L.circleMarker(latlng, { radius: 9, color: '#fff', weight: 2, fillColor: color, fillOpacity: 1 }),
+      pointToLayer: (_f, latlng) => few
+        ? L.circleMarker(latlng, { radius: 9, color: '#fff', weight: 2, fillColor: color, fillOpacity: 1 })
+        : L.circleMarker(latlng, { radius: 3, color, weight: 1, fillColor: color, fillOpacity: 0.6 }),
       onEachFeature: (feature, l) => {
         const p = (feature.properties ?? {}) as Record<string, unknown>;
         const rows = Object.entries(p)
@@ -73,7 +78,11 @@ export class GeoMapComponent implements AfterViewInit, OnDestroy {
           .map(([k, v]) => `<div><b>${this.fieldTitle(name, k)}:</b> ${String(v)}</div>`)
           .join('');
         l.bindPopup(`<div class="map-popup"><div class="map-popup-title">${title}: ${String(p['label'] ?? '')}</div>${rows}</div>`);
-        if (feature.geometry.type === 'Point') l.bindTooltip(String(p['label'] ?? ''), { permanent: true, direction: 'top', offset: [0, -8] });
+        const label = String(p['label'] ?? '');
+        const meaningful = label && !/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(label);
+        if (feature.geometry.type === 'Point' && few && meaningful) {
+          l.bindTooltip(label, { permanent: true, direction: 'top', offset: [0, -8] });
+        }
       },
     }).addTo(this.map);
     this.overlays.set(name, layer);
