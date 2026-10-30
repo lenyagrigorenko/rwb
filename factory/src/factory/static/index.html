@@ -212,13 +212,14 @@ async function showResults(s) {
     <button class="secondary" id="deployBtn">🚀 Развернуть и открыть</button>
     <a href="/api/runs/${runId}/archive">⬇ Архив проекта</a>
     ${r.apk ? `<a href="/api/runs/${runId}/apk">📱 APK</a><img src="/api/runs/${runId}/apk-qr" alt="QR APK" style="width:96px;height:96px;background:#fff;border-radius:8px;padding:4px"/>` : ''}
+    ${r.apk && r.mobile_api ? `<span title="Адрес сервера на экране входа приложения">API для приложения: <code>${esc(r.mobile_api)}</code></span>` : ''}
     ${r.web_url ? `<a href="${r.web_url}" target="_blank">Стенд: web</a>` : ''}
     ${r.video ? `<a href="/api/runs/${runId}/media?path=docs/demo.webm" target="_blank">🎬 Видео демо</a>` : ''}
     <span id="deployInfo" style="color:var(--muted)"></span>`;
   $('deployBtn').onclick = async () => {
     $('deployBtn').disabled = true; $('deployInfo').textContent = 'сборка контейнеров…';
     const d = await (await fetch(`/api/runs/${runId}/deploy`, { method: 'POST' })).json();
-    $('deployInfo').innerHTML = d.ok ? `<a href="${d.web}" target="_blank">Web-интерфейс</a> · <a href="${d.api}" target="_blank">API</a>` : 'ошибка развёртывания';
+    $('deployInfo').innerHTML = d.ok ? `<a href="${d.web}" target="_blank">Web-интерфейс</a> · <a href="${d.api}" target="_blank">API</a>` + (d.mobile_api ? ` · API для приложения: <code>${esc(d.mobile_api)}</code>` : '') : 'ошибка развёртывания';
     $('deployBtn').disabled = false;
   };
   const docs = await (await fetch(`/api/runs/${runId}/docs`)).json();

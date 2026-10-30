@@ -167,8 +167,9 @@ class Pipeline:
 
         apk_task = None
         low_mem = runtime.low_memory()
-        host = os.environ.get("PUBLIC_HOST", "10.0.2.2")
-        api_url = f"http://{host}:{runtime.ports_for(out.name)['API_PORT']}" if host != "10.0.2.2" else None
+        # Адрес API в APK — через прокси интерфейса фабрики; без PUBLIC_HOST/PUBLIC_URL — эмулятор (10.0.2.2:8080).
+        api_url = runtime.stand_api_url(out.name)
+        self.state.result["mobile_api"] = api_url
         apk_enabled = os.environ.get("FACTORY_APK", "on") != "off"
         if spec.has_mobile and build_ok and not low_mem and apk_enabled:
             apk_task = asyncio.create_task(builder.build_apk(out / "mobile", api_url))

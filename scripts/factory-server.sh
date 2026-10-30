@@ -17,7 +17,9 @@ start() {
   if running; then echo "уже запущен (pid $(cat "$PID_FILE")), http://${PUBLIC_HOST:-localhost}:$PORT"; return; fi
   [ -x "$UV" ] || { echo "нет uv: curl -LsSf https://astral.sh/uv/install.sh | sh"; exit 1; }
   local host="${PUBLIC_HOST:-$(hostname -I 2>/dev/null | awk '{print $1}')}"
-  local cmd="cd '$ROOT/factory' && PUBLIC_HOST='$host' PORT='$PORT' nohup '$UV' run factory serve --port '$PORT' >> '$LOG' 2>&1 & echo \$! > '$PID_FILE'"
+  # PUBLIC_URL — внешний адрес интерфейса, если порт 8000 проброшен наружу под другим номером (можно и в factory/.env).
+  local public_url=""; [ -n "${PUBLIC_URL:-}" ] && public_url="PUBLIC_URL='$PUBLIC_URL'"
+  local cmd="cd '$ROOT/factory' && PUBLIC_HOST='$host' $public_url PORT='$PORT' nohup '$UV' run factory serve --port '$PORT' >> '$LOG' 2>&1 & echo \$! > '$PID_FILE'"
   if docker info >/dev/null 2>&1; then
     bash -c "$cmd"
   else

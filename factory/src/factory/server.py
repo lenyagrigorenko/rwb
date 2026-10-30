@@ -9,11 +9,14 @@ import re
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+import httpx
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
+from starlette.background import BackgroundTask
 
 from .builder import run as run_cmd
 from .pipeline import Pipeline
+from .runtime import ports_for, public_base, stand_api_url
 
 ROOT = Path(__file__).resolve().parents[3]
 CASES = ROOT / "cases"
@@ -163,7 +166,7 @@ async def deploy(run_id: str) -> dict:
     ok, log, ports = await deploy_project(project, project.name)
     host = os.environ.get("PUBLIC_HOST", "localhost")
     return {"ok": ok, "web": f"http://{host}:{ports['WEB_PORT']}", "api": f"http://{host}:{ports['API_PORT']}/scalar",
-            "log": log[-3000:]}
+            "mobile_api": stand_api_url(project.name), "log": log[-3000:]}
 
 
 @app.get("/api/runs/{run_id}/archive")
@@ -189,9 +192,8 @@ def apk_qr(run_id: str) -> HTMLResponse:
     import qrcode
     import qrcode.image.svg
 
-    host = os.environ.get("PUBLIC_HOST", "localhost")
-    port = os.environ.get("PORT", "8000")
-    img = qrcode.make(f"http://{host}:{port}/api/runs/{run_id}/apk", image_factory=qrcode.image.svg.SvgPathImage, box_size=8)
+    base = public_base() or f"http://localhost:{os.environ.get('PORT', '8000')}"
+    img = qrcode.make(f"{base}/api/runs/{run_id}/apk", image_factory=qrcode.image.svg.SvgPathImage, box_size=8)
     buf = io.BytesIO()
     img.save(buf)
     return HTMLResponse(buf.getvalue().decode(), media_type="image/svg+xml")
@@ -204,3 +206,25 @@ def media(run_id: str, path: str) -> FileResponse:
     if project not in target.parents or not target.is_file():
         raise HTTPException(404)
     return FileResponse(target)
+
+
+PROXY = httpx.AsyncClient(timeout=httpx.Timeout(60, connect=5))
+HOP_HEADERS = {"host", "connection", "keep-alive", "transfer-encoding", "te", "trailer", "upgrade",
+               "proxy-authorization", "proxy-authenticate", "content-length"}
+
+
+@app.api_route("/stand/{project}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
+async def stand_proxy(project: str, path: str, request: Request) -> StreamingResponse:
+    """API развёрнутого стенда через порт фабрики: мобильному приложению и жюри не нужны отдельные порты стендов."""
+    if not re.fullmatch(r"\w[\w.-]*", project) or not (OUT / project).is_dir():
+        raise HTTPException(404, "Нет такого проекта")
+    url = httpx.URL(f"http://127.0.0.1:{ports_for(project)['API_PORT']}/{path}", query=request.url.query.encode())
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP_HEADERS}
+    try:
+        upstream = await PROXY.send(PROXY.build_request(request.method, url, headers=headers, content=await request.body()),
+                                    stream=True)
+    except httpx.TransportError:
+        raise HTTPException(502, f"Стенд {project} не запущен: нажмите «Развернуть» в интерфейсе фабрики")
+    return StreamingResponse(upstream.aiter_raw(), status_code=upstream.status_code,
+                             headers={k: v for k, v in upstream.headers.items() if k.lower() not in HOP_HEADERS},
+                             background=BackgroundTask(upstream.aclose))

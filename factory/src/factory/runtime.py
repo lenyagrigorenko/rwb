@@ -49,6 +49,20 @@ def ports_for(slug: str) -> dict[str, int]:
             "DB_PORT": 15500 + index}
 
 
+def public_base() -> str | None:
+    """Внешний адрес интерфейса фабрики: PUBLIC_URL (если порт проброшен под другим номером) или PUBLIC_HOST:PORT."""
+    if url := os.environ.get("PUBLIC_URL", "").strip().rstrip("/"):
+        return url
+    host = os.environ.get("PUBLIC_HOST")
+    return f"http://{host}:{os.environ.get('PORT', '8000')}" if host else None
+
+
+def stand_api_url(name: str) -> str | None:
+    """API стенда через прокси интерфейса фабрики (/stand/<проект>): снаружи нужен только один порт."""
+    base = public_base()
+    return f"{base}/stand/{name}" if base else None
+
+
 def write_env(project: Path, slug: str) -> dict[str, int]:
     ports = ports_for(project.name)
     env = (project / ".env.example").read_text(encoding="utf-8")
