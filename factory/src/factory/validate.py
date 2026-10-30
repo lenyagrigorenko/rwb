@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from .gen import naming as n
+from .gen.backend import id_aliases
 from .ir import AppSpec
 
 RESERVED = {"User", "AppUser", "OutboxEvent", "ConsumedEvent", "AppNotification", "IdempotencyRecord",
@@ -184,6 +185,11 @@ def check(spec: AppSpec, data_files: set[str] | None = None, requirements: str =
         for p in o.path_params:
             if not re.match(r"^[a-z][A-Za-z0-9]*$", p):
                 errors.append(f"Операция {o.name}: параметр пути {p} должен быть camelCase")
+            elif p.endswith("Id") and not any(p in id_aliases(spec, e) for e in spec.entities):
+                names = ", ".join("{" + n.camel(e.name) + "Id}" for e in spec.entities)
+                errors.append(f"Операция {o.name}: параметр {{{p}}} не соответствует ни одной сущности — используй один из: {names}")
+        if (o.name.startswith("Create") or o.path.rstrip("/").endswith("/create")) and not o.output_entity:
+            errors.append(f"Операция {o.name} создаёт запись — укажи output_entity (вернуть созданную запись с id)")
     for ev in spec.events:
         names = {p.name for p in ev.payload}
         for ph in re.findall(r"\{(\w+)\}", ev.notify or ""):
@@ -196,6 +202,25 @@ def check(spec: AppSpec, data_files: set[str] | None = None, requirements: str =
         events = {e.name for e in spec.events}
         op_names = {o.name for o in spec.operations}
         entity_names = {e.name for e in spec.entities}
+        emitters: dict[str, set[str]] = {}
+        for o in spec.operations:
+            for ev in o.emits:
+                emitters.setdefault(ev, set()).add(o.name)
+        job_events = {ev for j in spec.jobs for ev in j.emits}
+        transition_events = {t.emits for e in spec.entities if e.lifecycle for t in e.lifecycle.transitions if t.emits}
+        seen_ops: set[str] = set()
+        for st in spec.demo.steps:
+            if st.action in ("operation", "route") and st.operation:
+                seen_ops.add(st.operation)
+            if st.action == "expect":
+                ev = st.args.get("event")
+                ops_for = emitters.get(ev, set())
+                if ev and not ops_for and ev not in job_events and ev not in transition_events:
+                    errors.append(f"Демо {st.id}: событие {ev} не публикует ни одна операция, задача или переход — "
+                                  f"добавь его в emits той операции (или задачи), которая его порождает")
+                if ev and ev not in job_events and ev not in transition_events and ops_for and not (ops_for & seen_ops):
+                    errors.append(f"Демо {st.id}: событие {ev} публикует операция {', '.join(sorted(ops_for))}, но её нет "
+                                  f"в предыдущих шагах — добавь шаг action=operation с этой операцией перед {st.id}")
         for st in spec.demo.steps:
             if st.action in ("operation", "route") and st.operation not in op_names:
                 errors.append(f"Демо {st.id}: операции {st.operation} нет — используй существующую операцию или action=create с entity")

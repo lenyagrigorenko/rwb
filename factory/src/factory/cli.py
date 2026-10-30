@@ -19,6 +19,7 @@ def main() -> None:
     run.add_argument("--out", type=Path, default=ROOT / "out")
     run.add_argument("--runs", type=Path, default=ROOT / "runs")
     run.add_argument("--skip-verify", action="store_true")
+    sub.add_parser("doctor", help="Проверка хоста и модели перед прогоном")
     serve = sub.add_parser("serve", help="Веб-интерфейс конвейера")
     serve.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
     args = parser.parse_args()
@@ -29,6 +30,9 @@ def main() -> None:
         state = asyncio.run(p.run())
         print(json.dumps({"status": state.status, "project": state.result.get("project_dir"),
                           "metrics": {k: v for k, v in state.metrics.items() if k != "by_stage"}}, ensure_ascii=False, indent=1))
+    elif args.cmd == "doctor":
+        from .doctor import main as doctor
+        doctor()
     elif args.cmd == "serve":
         import uvicorn
         uvicorn.run("factory.server:app", host="0.0.0.0", port=args.port)

@@ -1,0 +1,206 @@
+# Развёртывание фабрики на сервере (VM хакатона)
+
+Цель: фабрика работает на VM, ходит в модель организаторов `qwen3.8-27b` по адресу `http://10.10.10.10:4000/v1`,
+жюри открывает веб-интерфейс, вставляет кейс 2 и получает развёрнутое приложение.
+
+Время: ~30–60 минут (основное — скачивание образов и прогрев кэшей).
+
+---
+
+## 0. Что нужно заранее
+
+| Что | Требование |
+|---|---|
+| VM | Linux x86_64, Docker 24+ с плагином compose, пользователь в группе `docker` |
+| Ресурсы | от 8 ГБ RAM (лучше 16), от 40 ГБ свободного диска, 4+ CPU |
+| Сеть VM | доступ к `10.10.10.10:4000` (модель) и в интернет к Docker Hub, mcr.microsoft.com, api.nuget.org, registry.npmjs.org, dl.google.com, repo.maven.apache.org, services.gradle.org |
+| Доступ с ноутбука | SSH `team23@85.143.113.230 -p 10023` |
+| Ключ модели | выдан организаторами (`sk-...`) |
+
+Если с Mac SSH «зависает» на приветствии — мешает VPN. Пустите адрес VM напрямую:
+правило **direct** для `85.143.113.230` в Happ (Маршрутизация), или (шлюз Wi-Fi/раздачи подставьте свой):
+
+```bash
+sudo route -n delete -host 85.143.113.230; sudo route -n add -host 85.143.113.230 172.20.10.1
+```
+
+## 0.1. Мало памяти (4 ГБ)
+
+Замеры на кейсе 1: работающий стенд (PostGIS, Kafka, backend, mocks, nginx) — ~0,7 ГБ; сборка .NET — до ~1 ГБ;
+сборка образа web — до ~1 ГБ; запись видео — ~0,4 ГБ; **сборка APK (Gradle) — до 3 ГБ**.
+
+На хосте с ОЗУ < 6 ГБ фабрика сама включает **режим малой памяти**: Kafka ограничена 256 МБ, одновременно работает один
+стенд (предыдущие останавливаются), APK собирается после всех проверок с урезанной кучей (`-Xmx1g`, 1 поток).
+Принудительно: `FACTORY_LOW_MEMORY=1` (или `0`), пропустить APK: `FACTORY_APK=off`.
+
+Обязательно добавьте swap, если есть sudo:
+
+```bash
+sudo fallocate -l 6G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+free -h
+```
+
+Без sudo и без swap: попросите организаторов увеличить ОЗУ до 8 ГБ, либо используйте вариант «фабрика на ноутбуке,
+модель через VM» (раздел 9) — на Mac 24 ГБ ОЗУ, всё проверено, образы и кэши уже прогреты.
+
+## 1. Проверить VM
+
+```bash
+ssh -p 10023 team23@85.143.113.230
+docker version && docker compose version          # оба должны ответить
+groups | grep -q docker && echo "в группе docker" || echo "нужен sudo usermod -aG docker $USER и перелогин"
+curl -s -o /dev/null -w "model:%{http_code}\n" http://10.10.10.10:4000/v1/models -H "Authorization: Bearer <КЛЮЧ>"
+curl -s -o /dev/null -w "nuget:%{http_code}\n" https://api.nuget.org/v3/index.json
+curl -s -o /dev/null -w "npm:%{http_code}\n" https://registry.npmjs.org/
+df -h ~ && free -g && nproc
+```
+
+Ожидаемо: `model:200`, `nuget:200`, `npm:200`. Если интернета нет — см. раздел 9.
+
+## 2. Скопировать код с ноутбука
+
+На Mac, из каталога `/Users/lenya/rwb`:
+
+```bash
+rsync -az --info=progress2 -e "ssh -p 10023" \
+  --exclude 'out/' --exclude 'runs/' --exclude '.venv/' --exclude 'node_modules/' \
+  --exclude '.env' --exclude '*.apk' --exclude '.gradle/' --exclude 'bin/' --exclude 'obj/' \
+  ./ team23@85.143.113.230:~/rwb/
+```
+
+(Когда появится GitLab — вместо rsync: `git clone` репозитория фабрики, см. раздел 8.)
+
+## 3. Ключ модели: локальный API вместо OpenRouter
+
+На VM создайте `~/rwb/factory/.env` (ключ подставьте свой):
+
+```bash
+cd ~/rwb/factory
+cat > .env <<'EOF'
+LLM_BASE_URL=http://10.10.10.10:4000/v1
+LLM_MODEL=qwen3.8-27b
+LLM_API_KEY=ВАШ_КЛЮЧ
+LLM_PROVIDER=
+LLM_THINKING=auto
+LLM_CONCURRENCY=4
+LLM_TIMEOUT=900
+EOF
+chmod 600 .env
+```
+
+| Переменная | Значение |
+|---|---|
+| `LLM_BASE_URL` | адрес OpenAI-совместимого API организаторов |
+| `LLM_MODEL` | `qwen3.8-27b` (без префикса `qwen/`, он только для OpenRouter) |
+| `LLM_PROVIDER` | пусто (используется только с OpenRouter) |
+| `LLM_THINKING` | `auto` — выключать «размышления» Qwen3 параметром шаблона; если сервер его не принимает, клиент сам переключится на `soft` (`/no_think` в запросе). Можно задать `soft` сразу |
+| `LLM_STRUCTURED` | по умолчанию `auto`; `off` — не просить у сервера JSON-схему (схема в промпте + проверка) |
+| `LLM_CONCURRENCY` | число параллельных запросов (4 — безопасно для общего сервера) |
+
+Вернуть OpenRouter (для отладки на Mac): `LLM_BASE_URL=https://openrouter.ai/api/v1`, `LLM_MODEL=qwen/qwen3.8-27b`,
+`LLM_PROVIDER=cerebras/fp16`, ключ OpenRouter.
+
+## 4. Установка и прогрев
+
+```bash
+cd ~/rwb
+./scripts/vm-setup.sh
+```
+
+Скрипт: ставит `uv` и зависимости Python, скачивает образы стека (.NET SDK/ASP.NET, PostGIS, Node, nginx, Kafka,
+Playwright), собирает образ сборщика Android, прогревает кэши NuGet / npm / Gradle на эталонном проекте, проверяет
+модель и запускает веб-интерфейс на `:8000`. Повторный запуск безопасен.
+
+## 5. Проверка готовности
+
+```bash
+cd ~/rwb/factory && uv run factory doctor
+```
+
+Все строки должны быть ✅ (⚠️ «порт 8000 занят» — нормально, если интерфейс уже запущен). Обратите внимание на:
+
+- **режим размышлений выключен** — если reasoning tokens > 0, поставьте `LLM_THINKING=soft` в `.env`;
+- **JSON по схеме** — «на стороне сервера: нет» допустимо, просто чуть больше токенов;
+- **скорость** — на сервере площадки ожидаем ~60 ток/с; полный прогон кейса ≈ 10–15 минут.
+
+## 6. Запуск веб-интерфейса (постоянно)
+
+Чтобы интерфейс не умер при отключении SSH — в `tmux`:
+
+```bash
+tmux new -s factory
+cd ~/rwb/factory
+PUBLIC_HOST=$(hostname -I | awk '{print $1}') uv run factory serve --port 8000
+# выйти, не останавливая: Ctrl+B, затем D;  вернуться: tmux attach -t factory
+```
+
+`PUBLIC_HOST` — адрес, по которому VM видят жюри и телефоны (для ссылок на стенды и QR-кода APK).
+Если жюри ходит на VM по другому адресу/порту (проброс организаторов) — укажите его.
+
+Проверка с ноутбука через SSH-туннель (если порт 8000 снаружи закрыт):
+
+```bash
+ssh -p 10023 -L 8000:localhost:8000 team23@85.143.113.230
+# открыть http://localhost:8000
+```
+
+## 7. Прогон кейса
+
+- **Веб**: http://<VM>:8000 → выбрать «Помощник управления платными парковками» или вставить текст кейса 2 →
+  приложить файлы данных → «Запустить». Вопросы появятся справа; без ответа через 60 с — ответы по умолчанию.
+- **Консоль**: `cd ~/rwb/factory && uv run factory run ../cases/case1`
+
+Результат: `~/rwb/out/<slug>/` (проект), `~/rwb/runs/<id>/` (журнал, токены, демо). Стенд каждого проекта
+поднимается на своих портах (web 81x0, API 81x1), ссылки — на странице результата.
+
+**Перед сдачей:** прогнать кейс 1 один раз на ключе организаторов — это даст честные метрики в
+`docs/pipeline-report.md`.
+
+## 8. GitLab
+
+1. В локальном GitLab создайте два проекта: `factory` (сам конвейер) и `spb-parking-assistant` (результат кейса 1).
+2. Фабрика:
+   ```bash
+   cd ~/rwb && git init -b main && git add . && git commit -m "Фабрика приложений"
+   git remote add origin <URL проекта factory> && git push -u origin main
+   ```
+3. Результат кейса 1:
+   ```bash
+   cd ~/rwb/out/spb-parking-assistant && git init -b main && git add . && git commit -m "Сгенерировано фабрикой"
+   git remote add origin <URL проекта> && git push -u origin main
+   ```
+4. CI сгенерированного проекта (`.gitlab-ci.yml`) требует GitLab Runner с docker executor; для интеграционных
+   тестов и сборки образов — `privileged = true` (docker-in-docker). Без runner'а артефакты всё равно есть в
+   репозитории: отчёты в `docs/`, видео `docs/demo.webm`.
+
+## 9. Если на VM нет интернета или Docker
+
+**Запасной вариант: фабрика на ноутбуке, модель — через VM.**
+
+```bash
+ssh -p 10023 -N -L 4000:10.10.10.10:4000 team23@85.143.113.230      # держать открытым
+# в factory/.env на Mac:
+# LLM_BASE_URL=http://localhost:4000/v1   LLM_MODEL=qwen3.8-27b   LLM_API_KEY=<ключ>   LLM_PROVIDER=
+cd /Users/lenya/rwb/factory && uv run factory doctor && uv run factory serve
+```
+
+Жюри открывает `http://<IP ноутбука в сети площадки>:8000`.
+
+Без интернета на VM, но с Docker: заранее на ноутбуке `docker save` нужных образов → `scp` → `docker load` на VM;
+кэши NuGet/npm/Gradle перенести томами (`docker run --rm -v nuget-cache:/v -v $PWD:/b alpine tar czf /b/nuget.tgz -C /v .`).
+
+## 10. Частые проблемы
+
+| Симптом | Причина и решение |
+|---|---|
+| SSH висит на приветствии | VPN на Mac — маршрут в обход (раздел 0) |
+| `doctor`: модель недоступна | неверный ключ/адрес в `.env`; проверить `curl .../v1/models` с ключом |
+| reasoning tokens > 0, медленно | `LLM_THINKING=soft` |
+| 429 / таймауты модели | уменьшить `LLM_CONCURRENCY` до 2, сообщить организаторам |
+| сборка .NET: restore error | нет доступа к api.nuget.org; прогреть кэш (раздел 9) |
+| стенд не поднимается: порт занят | `docker ps`, остановить старые стенды: `cd ~/rwb/out/<slug> && docker compose down` |
+| APK не собирается | нет образа `factory/android-builder:1` — `docker build -t factory/android-builder:1 factory/docker/android-builder`; при 4 ГБ без swap — `FACTORY_APK=off` |
+| OOM / контейнеры падают с кодом 137 | мало памяти: добавить swap (раздел 0.1), остановить лишние стенды `docker ps` |
+| нет видео демо | нет образа Playwright — `docker pull mcr.microsoft.com/playwright:v1.64.1-noble` |
+| интерфейс не открывается снаружи | порт 8000 закрыт — SSH-туннель (раздел 6) или попросить организаторов открыть порт |

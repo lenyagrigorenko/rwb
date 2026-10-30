@@ -61,9 +61,12 @@ async def test_backend(backend: Path, solution: str, filter_: str | None = None)
 ANDROID_BUILDER = "factory/android-builder:1"
 
 
-async def build_apk(mobile: Path, api_url: str | None = None) -> tuple[bool, Path | None, str]:
+async def build_apk(mobile: Path, api_url: str | None = None, low_memory: bool = False) -> tuple[bool, Path | None, str]:
     """assembleDebug in the Android builder image; returns the APK path."""
     args = ["gradle", "assembleDebug", "--no-daemon", "-q"]
+    if low_memory:
+        args += ["--max-workers=1", "-Dorg.gradle.jvmargs=-Xmx1g -XX:MaxMetaspaceSize=384m",
+                 "-Pkotlin.compiler.execution.strategy=in-process"]
     if api_url:
         args.append(f"-PapiUrl={api_url}")
     code, out = await run(["docker", "run", "--rm", "-v", f"{mobile.resolve()}:/src", "-v", "gradle-cache:/cache",

@@ -37,7 +37,7 @@ STAGES = [
     ("publish", "Публикация", "DevOps"),
 ]
 
-DOMAIN_KEYWORDS = ("datasets", "owner_field", "Сущность", "сущност", "demo_login", "регуляр", "поля ", "Имя сущности")
+BEHAVIOUR_PREFIXES = ("Операция", "Событие", "Демо", "Требуется", "В требованиях", "Нет демо")
 
 
 @dataclass
@@ -108,6 +108,9 @@ class Pipeline:
                     st["status"] = "failed"
             raise
         finally:
+            lock = getattr(self, "_lock", None)
+            if lock is not None and lock.exists() and lock.read_text().endswith(self.run_id):
+                lock.unlink()
             self.save()
         return self.state
 
@@ -145,7 +148,7 @@ class Pipeline:
         (self.run_dir / "spec.yaml").write_text(yaml.safe_dump(spec.model_dump(), allow_unicode=True, sort_keys=False),
                                                 encoding="utf-8")
 
-        out = self.out_root / spec.slug
+        out = self._claim_project_dir(spec.slug)
         self.state.result["project_dir"] = str(out)
         self.stage("codegen", "running")
         self._generate(spec, out, {})
@@ -163,9 +166,10 @@ class Pipeline:
                    "сборка успешна" + (f", заглушек: {len(defects)}" if defects else ""))
 
         apk_task = None
-        if spec.has_mobile and build_ok:
-            host = os.environ.get("PUBLIC_HOST", "10.0.2.2")
-            api_url = f"http://{host}:{runtime.ports_for(spec.slug)['API_PORT']}" if host != "10.0.2.2" else None
+        low_mem = runtime.low_memory()
+        host = os.environ.get("PUBLIC_HOST", "10.0.2.2")
+        api_url = f"http://{host}:{runtime.ports_for(out.name)['API_PORT']}" if host != "10.0.2.2" else None
+        if spec.has_mobile and build_ok and not low_mem:
             apk_task = asyncio.create_task(builder.build_apk(out / "mobile", api_url))
             self.log("Сборка Android-приложения запущена параллельно с проверками")
 
@@ -178,6 +182,9 @@ class Pipeline:
             self.state.result["video"] = bool(verification.get("video"))
             self.stage("verify", "done", verification.get("summary", ""))
 
+        if spec.has_mobile and build_ok and low_mem and os.environ.get("FACTORY_APK", "on") != "off":
+            self.log("Мало памяти: Android-приложение собирается после проверок")
+            apk_task = asyncio.create_task(builder.build_apk(out / "mobile", api_url, low_memory=True))
         if apk_task:
             apk_ok, apk, apk_log = await apk_task
             self.state.result["apk"] = str(apk) if apk_ok and apk else None
@@ -195,6 +202,23 @@ class Pipeline:
         self.stage("publish", "running")
         self._copy_run_artifacts(out)
         self.stage("publish", "done", str(out))
+
+    def _claim_project_dir(self, slug: str) -> Path:
+        """Project directory owned by this run; a concurrent run with the same slug gets its own copy."""
+        out = self.out_root / slug
+        lock = out / ".run.lock"
+        if lock.exists():
+            try:
+                pid = int(lock.read_text().split()[0])
+                os.kill(pid, 0)
+                if pid != os.getpid():
+                    out = self.out_root / f"{slug}-{self.run_id[-6:]}"
+            except (ValueError, ProcessLookupError, PermissionError, IndexError):
+                pass
+        out.mkdir(parents=True, exist_ok=True)
+        (out / ".run.lock").write_text(f"{os.getpid()} {self.run_id}")
+        self._lock = out / ".run.lock"
+        return out
 
     # ------------------------------------------------------------------ stages
     async def _clarify(self, analysis) -> None:
@@ -235,7 +259,7 @@ class Pipeline:
             if attempt == 2:
                 break
             self.log(f"Проверка чертежа: {len(errors)} замечаний → исправление")
-            dom_err = [e for e in errors if any(k in e for k in DOMAIN_KEYWORDS)]
+            dom_err = [e for e in errors if not e.startswith(BEHAVIOUR_PREFIXES)]
             beh_err = [e for e in errors if e not in dom_err]
             tasks = []
             if dom_err:

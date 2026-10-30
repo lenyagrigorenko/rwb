@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -17,6 +18,31 @@ from .ir import AppSpec
 DEMO_PASSWORD = "Demo2026!"
 
 
+def total_memory_gb() -> float:
+    try:
+        with open("/proc/meminfo") as f:
+            return int(f.readline().split()[1]) / 2**20
+    except OSError:
+        import subprocess
+        try:
+            return int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]).strip()) / 2**30
+        except Exception:
+            return 16.0
+
+
+def low_memory() -> bool:
+    """FACTORY_LOW_MEMORY=1/0 forces the mode; otherwise auto: less than 6 GB RAM."""
+    flag = os.environ.get("FACTORY_LOW_MEMORY", "").strip()
+    return flag == "1" if flag else total_memory_gb() < 6
+
+
+async def stop_other_stands(project: Path) -> None:
+    """On small hosts keep only one generated stand running."""
+    for other in project.parent.iterdir():
+        if other != project and (other / "docker-compose.yml").exists() and (other / ".env").exists():
+            await run(["docker", "compose", "down"], cwd=other, timeout=120)
+
+
 def ports_for(slug: str) -> dict[str, int]:
     index = sum(ord(c) for c in slug) % 40
     return {"WEB_PORT": 8100 + index * 10, "API_PORT": 8101 + index * 10, "MOCKS_PORT": 8102 + index * 10,
@@ -24,7 +50,7 @@ def ports_for(slug: str) -> dict[str, int]:
 
 
 def write_env(project: Path, slug: str) -> dict[str, int]:
-    ports = ports_for(slug)
+    ports = ports_for(project.name)
     env = (project / ".env.example").read_text(encoding="utf-8")
     for k, v in ports.items():
         env = re.sub(rf"^{k}=.*$", f"{k}={v}", env, flags=re.M)
@@ -33,6 +59,8 @@ def write_env(project: Path, slug: str) -> dict[str, int]:
 
 
 async def deploy(project: Path, slug: str, services: list[str] | None = None) -> tuple[bool, str, dict[str, int]]:
+    if low_memory() and not services:
+        await stop_other_stands(project)
     ports = write_env(project, slug)
     code, out = await run(["docker", "compose", "up", "-d", "--build", "--wait", *(services or [])], cwd=project, timeout=1800)
     return code == 0, out[-4000:], ports

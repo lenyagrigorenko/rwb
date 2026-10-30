@@ -83,16 +83,22 @@ class LLM:
         self.client = AsyncOpenAI(
             base_url=self.base_url,
             api_key=os.environ.get("LLM_API_KEY", "missing"),
-            timeout=600,
+            timeout=float(os.environ.get("LLM_TIMEOUT", "900")),
             max_retries=0,
         )
         self.sem = asyncio.Semaphore(int(os.environ.get("LLM_CONCURRENCY", "6")))
         self.telemetry = telemetry or Telemetry()
         self.structured_supported: bool | None = None
+        # LLM_THINKING: auto | template (chat_template_kwargs) | soft (/no_think в промпте) | none
+        self.thinking_mode = os.environ.get("LLM_THINKING", "auto").strip().lower()
+        if os.environ.get("LLM_STRUCTURED", "auto").strip().lower() == "off":
+            self.structured_supported = False
 
     def _extra(self, think: bool) -> dict:
         extra: dict = {}
-        if "openrouter.ai" in self.base_url:
+        if self.thinking_mode in ("none", "soft"):
+            return extra
+        if "openrouter.ai" in self.base_url and self.thinking_mode == "auto":
             extra["reasoning"] = {"enabled": think}
             if self.provider:
                 extra["provider"] = {"only": [self.provider], "allow_fallbacks": False}
@@ -104,6 +110,8 @@ class LLM:
     async def _call(self, stage: str, attempt: int, messages: list[dict], *,
                     think: bool, max_tokens: int, response_format: dict | None) -> str:
         t0 = time.perf_counter()
+        if self.thinking_mode == "soft" and not think:
+            messages = messages[:-1] + [{**messages[-1], "content": messages[-1]["content"] + "\n/no_think"}]
         kwargs: dict = dict(model=self.model, messages=messages, max_tokens=max_tokens,
                             temperature=0.2 if not think else 0.6,
                             extra_body=self._extra(think))
@@ -118,6 +126,15 @@ class LLM:
             except APIStatusError as e:  # rate limits / provider hiccups: back off, same request
                 self.telemetry.add(CallRecord(stage, attempt, 0, 0, 0, round(time.perf_counter() - t0, 2),
                                               False, f"{e.status_code}: {str(e)[:200]}"))
+                if e.status_code in (400, 422) and kwargs["extra_body"] and "response_format" not in str(e).lower():
+                    # Сервер не принимает дополнительные параметры (например, chat_template_kwargs):
+                    # дальше выключаем «размышления» мягким переключателем Qwen3 в тексте запроса.
+                    self.thinking_mode = "soft"
+                    kwargs["extra_body"] = {}
+                    if not think:
+                        msgs = kwargs["messages"]
+                        kwargs["messages"] = msgs[:-1] + [{**msgs[-1], "content": msgs[-1]["content"] + "\n/no_think"}]
+                    continue
                 if e.status_code not in (429, 500, 502, 503, 504) or transport_try == 5:
                     raise
                 if transport_try >= 1 and "provider" in kwargs["extra_body"]:

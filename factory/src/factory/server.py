@@ -158,18 +158,12 @@ def read_file(run_id: str, path: str) -> str:
 
 @app.post("/api/runs/{run_id}/deploy")
 async def deploy(run_id: str) -> dict:
+    from .runtime import deploy as deploy_project
     project = _project(run_id)
-    index = abs(hash(project.name)) % 50
-    ports = {"WEB_PORT": 8088 + index * 10, "API_PORT": 8080 + index * 10, "DB_PORT": 15432 + index,
-             "MOCKS_PORT": 8081 + index * 10}
-    env = (project / ".env.example").read_text(encoding="utf-8")
-    for k, v in ports.items():
-        env = re.sub(rf"^{k}=.*$", f"{k}={v}", env, flags=re.M)
-    (project / ".env").write_text(env, encoding="utf-8")
-    code, out = await run_cmd(["docker", "compose", "up", "-d", "--build", "--wait"], cwd=project, timeout=1500)
+    ok, log, ports = await deploy_project(project, project.name)
     host = os.environ.get("PUBLIC_HOST", "localhost")
-    return {"ok": code == 0, "web": f"http://{host}:{ports['WEB_PORT']}", "api": f"http://{host}:{ports['API_PORT']}/scalar",
-            "log": out[-3000:]}
+    return {"ok": ok, "web": f"http://{host}:{ports['WEB_PORT']}", "api": f"http://{host}:{ports['API_PORT']}/scalar",
+            "log": log[-3000:]}
 
 
 @app.get("/api/runs/{run_id}/archive")

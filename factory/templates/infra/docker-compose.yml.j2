@@ -1,5 +1,4 @@
 # {{spec.product_name}}: локальное окружение. Запуск: docker compose up -d --build
-name: {{spec.slug}}
 
 services:
   db:
@@ -35,6 +34,7 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_NUM_PARTITIONS: 3
+      KAFKA_HEAP_OPTS: "-Xmx256m -Xms256m"
     healthcheck:
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
       interval: 10s
@@ -58,6 +58,7 @@ services:
       Jwt__Key: ${JWT_KEY:-}
       Seed__DemoPassword: ${DEMO_PASSWORD:-Demo2026!}
       Cors__Origins: http://localhost:${WEB_PORT:-8088}
+      DOTNET_gcServer: "0"
     depends_on:
       db:
         condition: service_healthy
