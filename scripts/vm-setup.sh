@@ -35,6 +35,12 @@ if ! command -v uv >/dev/null; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 (cd factory && uv sync -q)
+if [ -n "$OWNER" ]; then
+  # Запуск через sudo: доступ к Docker и uv нужны и обычному пользователю, от которого работает интерфейс.
+  usermod -aG docker "$OWNER" || true
+  sudo -u "$OWNER" -H sh -c 'test -x "$HOME/.local/bin/uv" || curl -LsSf https://astral.sh/uv/install.sh | sh' >/dev/null
+  echo "  $OWNER добавлен в группу docker, uv установлен для $OWNER"
+fi
 
 echo "== Образы стека"
 for img in mcr.microsoft.com/dotnet/sdk:10.0 mcr.microsoft.com/dotnet/aspnet:10.0 postgis/postgis:17-3.5 \
@@ -91,14 +97,11 @@ PY
 echo "== Проверка хоста и модели"
 (cd factory && uv run factory doctor) || true
 
-echo "== Запуск веб-интерфейса на :8000 (PUBLIC_HOST — адрес, по которому VM видна жюри)"
-PUBLIC_HOST="${PUBLIC_HOST:-$(hostname -I | awk '{print $1}')}"
-export PUBLIC_HOST
-mkdir -p runs
+echo "== Запуск веб-интерфейса на :8000"
+fix_owner
 if [ -n "$OWNER" ]; then
-  fix_owner
-  echo "  интерфейс запустите от $OWNER (не через sudo): cd ~/rwb/factory && PUBLIC_HOST=$PUBLIC_HOST uv run factory serve --port 8000"
+  sudo -u "$OWNER" -g docker -H bash -c "cd '$ROOT' && ./scripts/factory-server.sh restart"
 else
-  (cd factory && nohup uv run factory serve --port 8000 > ../runs/server.log 2>&1 &)
-  echo "Готово: http://$PUBLIC_HOST:8000"
+  ./scripts/factory-server.sh restart
 fi
+echo "Управление: ./scripts/factory-server.sh start|stop|restart|status|logs"

@@ -135,19 +135,20 @@ cd ~/rwb/factory && uv run factory doctor
 
 ## 6. Запуск веб-интерфейса (постоянно)
 
-Чтобы интерфейс не умер при отключении SSH — в `tmux`:
+`vm-setup.sh` в конце запускает интерфейс сам. Управление (работает без tmux, переживает отключение SSH):
 
 ```bash
-tmux new -s factory
-cd ~/rwb/factory
-PUBLIC_HOST=$(hostname -I | awk '{print $1}') uv run factory serve --port 8000
-# выйти, не останавливая: Ctrl+B, затем D;  вернуться: tmux attach -t factory
+cd ~/rwb
+./scripts/factory-server.sh status     # работает ли
+./scripts/factory-server.sh restart    # после git pull
+./scripts/factory-server.sh logs       # журнал (Ctrl+C — выйти из просмотра)
+./scripts/factory-server.sh stop
 ```
 
-`PUBLIC_HOST` — адрес, по которому VM видят жюри и телефоны (для ссылок на стенды и QR-кода APK).
-Если жюри ходит на VM по другому адресу/порту (проброс организаторов) — укажите его.
+Адрес для ссылок на стенды и QR-код APK — `PUBLIC_HOST` (по умолчанию внутренний IP VM, например `10.10.1.23`).
+Если жюри ходит на VM по другому адресу: `PUBLIC_HOST=<адрес> ./scripts/factory-server.sh restart`.
 
-Проверка с ноутбука через SSH-туннель (если порт 8000 снаружи закрыт):
+Открыть интерфейс с ноутбука через SSH-туннель (VPN выключен):
 
 ```bash
 ssh -p 10023 -L 8000:localhost:8000 team23@85.143.113.230
@@ -225,7 +226,8 @@ docker tag ghcr.io/lenyagrigorenko/factory-android-builder:1 factory/android-bui
 
 ## 9.2. Запуск через sudo
 
-Скрипт и фабрику лучше запускать от `team23`, не от root. Один раз:
+`vm-setup.sh` можно запускать через `sudo`: он сам добавит пользователя в группу `docker`, поставит ему `uv`,
+вернёт владельца файлов и запустит интерфейс от его имени. Чтобы `docker` работал без sudo в ваших сессиях — один раз:
 
 ```bash
 sudo usermod -aG docker team23     # затем выйти из SSH и зайти снова

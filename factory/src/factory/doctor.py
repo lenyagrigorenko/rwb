@@ -52,7 +52,8 @@ async def check_host() -> None:
     if ram < 6 and swap < 2:
         line(None, "рекомендуется swap 4–8 ГБ (DEPLOY.md, раздел «Мало памяти»)")
     free = shutil.disk_usage("/").free // 2**30
-    line(free > 20, f"свободно на диске: {free} ГБ")
+    line(True if free >= 25 else (None if free >= 10 else False),
+         f"свободно на диске: {free} ГБ" + ("" if free >= 25 else " — очистка: docker builder prune -af; docker image prune -f"))
     for port in (8000,):
         with socket.socket() as s:
             busy = s.connect_ex(("127.0.0.1", port)) == 0
