@@ -34,13 +34,19 @@ export PATH="$HOME/.local/bin:$PATH"
 if ! command -v uv >/dev/null; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
-(cd factory && uv sync -q)
 if [ -n "$OWNER" ]; then
-  # Запуск через sudo: доступ к Docker и uv нужны и обычному пользователю, от которого работает интерфейс.
+  # Запуск через sudo: интерфейс работает от обычного пользователя — ему нужны Docker, uv и своё окружение Python.
+  # У root отдельное окружение вне репозитория, иначе factory/.venv ссылался бы на Python в /root (нет доступа).
+  export UV_PROJECT_ENVIRONMENT=/root/.cache/factory-venv
   usermod -aG docker "$OWNER" || true
-  sudo -u "$OWNER" -H sh -c 'test -x "$HOME/.local/bin/uv" || curl -LsSf https://astral.sh/uv/install.sh | sh' >/dev/null
-  echo "  $OWNER добавлен в группу docker, uv установлен для $OWNER"
+  if [ -d factory/.venv ] && [ "$(stat -c %U factory/.venv)" = "root" ] || readlink factory/.venv/bin/python 2>/dev/null | grep -q '^/root'; then
+    rm -rf factory/.venv
+  fi
+  chown -R "$OWNER":"$OWNER" "$ROOT"
+  sudo -u "$OWNER" -H bash -c "test -x \$HOME/.local/bin/uv || curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null; cd '$ROOT/factory' && \$HOME/.local/bin/uv sync -q"
+  echo "  $OWNER добавлен в группу docker, uv и окружение Python установлены для $OWNER"
 fi
+(cd factory && uv sync -q)
 
 echo "== Образы стека"
 for img in mcr.microsoft.com/dotnet/sdk:10.0 mcr.microsoft.com/dotnet/aspnet:10.0 postgis/postgis:17-3.5 \
