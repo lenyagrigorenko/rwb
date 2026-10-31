@@ -58,7 +58,7 @@ public interface IGeoService
 /// <summary>Построение демонстрационного маршрута через объекты геослоя.</summary>
 public interface IDemoRoutePlanner
 {
-    Task<DemoRoute> PlanAsync(string entity, int zones, CancellationToken ct);
+    Task<DemoRoute> PlanAsync(string? entity, int zones, CancellationToken ct, Guid? target = null);
 }
 
 /// <summary>Демонстрационный маршрут: участки (legs) и объекты, через которые он проходит.</summary>
@@ -83,7 +83,16 @@ public static class GeoJson
     public static Geometry? FromJson(JsonElement? json)
     {
         if (json is null || json.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined) return null;
-        var g = json.Value.Deserialize<Geometry>(Options);
+        var v = json.Value;
+        // Кроме GeoJSON принимаем {lat, lon} / {latitude, longitude} и [lon, lat] — так точки шлют мобильные клиенты.
+        if (v.ValueKind == JsonValueKind.Object && !v.TryGetProperty("type", out _))
+        {
+            double? Num(params string[] names) => names.Select(n => v.TryGetProperty(n, out var x) && x.ValueKind == JsonValueKind.Number ? x.GetDouble() : (double?)null).FirstOrDefault(x => x is not null);
+            if (Num("lat", "latitude") is { } la && Num("lon", "lng", "longitude") is { } lo) return Point(lo, la);
+        }
+        if (v.ValueKind == JsonValueKind.Array && v.GetArrayLength() == 2 && v[0].ValueKind == JsonValueKind.Number)
+            return Point(v[0].GetDouble(), v[1].GetDouble());
+        var g = v.Deserialize<Geometry>(Options);
         if (g is not null) g.SRID = 4326;
         return g;
     }
@@ -108,6 +117,19 @@ public static class AppTime
 
     /// <summary>Время в формате ЧЧ:ММ по местному времени.</summary>
     public static string Hm(DateTimeOffset utc) => ToLocal(utc).ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>Сегодняшняя дата по местному времени (для полей типа date).</summary>
+    public static DateOnly Today(DateTimeOffset utc) => DateOnly.FromDateTime(ToLocal(utc).DateTime);
+
+    /// <summary>Дата момента по местному времени.</summary>
+    public static DateOnly Date(DateTimeOffset utc) => Today(utc);
+
+    /// <summary>Число дней от from до to (to − from); для DateOnly оператор «−» не определён.</summary>
+    public static int Days(DateOnly from, DateOnly to) => to.DayNumber - from.DayNumber;
+
+    /// <summary>Начало дня (00:00 местного времени) в UTC — для сравнения date с моментами времени.</summary>
+    public static DateTimeOffset StartOf(DateOnly date) =>
+        new DateTimeOffset(date.ToDateTime(TimeOnly.MinValue), Zone.GetUtcOffset(date.ToDateTime(TimeOnly.MinValue))).ToUniversalTime();
 }
 
 /// <summary>Общие настройки JSON (camelCase, enum как строки).</summary>

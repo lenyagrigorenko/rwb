@@ -33,7 +33,7 @@ if (string.IsNullOrWhiteSpace(jwtKey) || jwtKey.Length < 32)
     Console.WriteLine("WARN: Jwt:Key is not configured, using an ephemeral key (tokens reset on restart)");
 }
 
-builder.Services.AddControllers(o => o.ModelMetadataDetailsProviders.Add(new Microsoft.AspNetCore.Mvc.ModelBinding.Metadata.SystemTextJsonValidationMetadataProvider())).AddJsonOptions(o =>
+builder.Services.AddControllers(o => o.Filters.Add<SaveChangesFilter>()).AddMvcOptions(o => o.ModelMetadataDetailsProviders.Add(new Microsoft.AspNetCore.Mvc.ModelBinding.Metadata.SystemTextJsonValidationMetadataProvider())).AddJsonOptions(o =>
 {
     o.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
 });
@@ -102,7 +102,7 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
     .AllowAnyHeader()
     .AllowAnyMethod()
     .WithExposedHeaders("X-Correlation-Id")));
-builder.Services.AddHealthChecks().AddDbContextCheck<AppDbContext>("database", tags: ["ready"]);
+builder.Services.AddObservability();
 
 var app = builder.Build();
 
@@ -110,6 +110,7 @@ await app.Services.InitializeDatabaseAsync();
 
 app.UseExceptionHandler();
 app.UseMiddleware<CorrelationIdMiddleware>();
+app.UseMiddleware<MetricsMiddleware>();
 app.UseCors();
 app.UseAuthentication();
 app.UseRateLimiter();
@@ -118,8 +119,7 @@ app.UseMiddleware<IdempotencyMiddleware>();
 
 app.MapOpenApi();
 app.MapScalarApiReference();
-app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
-app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = c => c.Tags.Contains("ready") });
+app.MapObservability();
 app.MapControllers();
 
 app.Run();

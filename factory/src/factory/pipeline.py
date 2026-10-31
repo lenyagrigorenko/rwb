@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import os
 import shutil
 import time
@@ -13,7 +14,7 @@ from typing import Awaitable, Callable
 
 import yaml
 
-from . import agents, builder, coder, recorder, runtime, validate
+from . import agents, builder, coder, diagrams, gitlab, recorder, runtime, security, validate
 from .gen import backend as bgen
 from .gen import docs as dgen
 from .gen import frontend as fgen
@@ -59,12 +60,15 @@ class Pipeline:
                  answer_timeout: float = 0, answers: Callable[[], Awaitable[dict]] | None = None,
                  skip_verify: bool = False):
         self.case_dir = case_dir
-        self.run_id = run_id or time.strftime("%Y%m%d-%H%M%S")
+        # Время + случайный суффикс: прогоны, запущенные в одну секунду, не делят каталог.
+        self.run_id = run_id or time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(2).hex()
         self.run_dir = runs_root / self.run_id
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.state = RunState(self.run_id, case_dir.name)
         self.telemetry = Telemetry(log_path=self.run_dir / "llm_calls.jsonl")
         self.llm = LLM(self.telemetry)
+        self.patches: dict[str, str] = {}  # путь в backend/ → исправленный моделью сгенерированный файл
+        self.build_log = ""
         self.answer_timeout = answer_timeout
         self.answers_provider = answers
         self.skip_verify = skip_verify
@@ -133,12 +137,22 @@ class Pipeline:
         self.stage("analysis", "done", f"{len(analysis.functional)} ФТ, {len(analysis.acceptance)} критериев приёмки, "
                                        f"{len(analysis.ambiguities)} неоднозначностей")
 
-        self.stage("clarify", "running")
-        await self._clarify(analysis)
-        self.stage("clarify", "done", f"вопросов: {len(self.state.questions)}")
-
+        # Архитектор стартует сразу с ответами по умолчанию, пока заказчик думает над вопросами.
+        # Если ответ заказчика меняет решение — проектирование перезапускается с ним.
+        for q in analysis.ambiguities:
+            q.answer = q.default_answer
         self.stage("design", "running")
-        domain, behaviour = await agents.design(self.llm, requirements, profile, analysis)
+        speculative = asyncio.create_task(agents.design(self.llm, requirements, profile, analysis.model_copy(deep=True)))
+        self.stage("clarify", "running")
+        changed = await self._clarify(analysis)
+        self.stage("clarify", "done", f"вопросов: {len(self.state.questions)}"
+                   + (f", изменили решение: {len(changed)}" if changed else ""))
+        if changed:
+            speculative.cancel()
+            self.log("Ответы заказчика отличаются от решений по умолчанию → проектирование с учётом ответов")
+            domain, behaviour = await agents.design(self.llm, requirements, profile, analysis)
+        else:
+            domain, behaviour = await speculative
         spec = self._assemble(analysis, domain, behaviour)
         self.stage("design", "done", f"{len(spec.entities)} сущностей, {len(spec.operations)} операций, "
                                      f"{len(spec.events)} событий")
@@ -175,6 +189,11 @@ class Pipeline:
             apk_task = asyncio.create_task(builder.build_apk(out / "mobile", api_url))
             self.log("Сборка Android-приложения запущена параллельно с проверками")
 
+        # Проверки безопасности (зависимости, секреты, статический анализ) — параллельно с проверкой стенда;
+        # при малой памяти — после неё.
+        security_task = None
+        if build_ok and not low_mem:
+            security_task = asyncio.create_task(security.scan(out, f"{spec.namespace}.slnx", self.build_log))
         verification = {}
         if self.skip_verify:
             self.stage("verify", "skipped", "пропущено флагом")
@@ -184,6 +203,18 @@ class Pipeline:
             self.state.result["video"] = bool(verification.get("video"))
             self.stage("verify", "done", verification.get("summary", ""))
 
+        if build_ok and security_task is None:
+            security_task = asyncio.create_task(security.scan(out, f"{spec.namespace}.slnx", self.build_log))
+        if security_task:
+            try:
+                sec = await security_task
+                self.state.result["security_findings"] = sec["markdown"]
+                self.state.result["security_status"] = sec["status"]
+                verification["security"] = sec["status"]
+                (self.run_dir / "security.json").write_text(json.dumps(sec, ensure_ascii=False, indent=1), encoding="utf-8")
+                self.log(f"Проверка безопасности: {sec['status']} (находок: {len(sec['findings'])})")
+            except Exception as e:  # сканеры не должны ронять прогон
+                self.log(f"Проверка безопасности не выполнена: {str(e)[:200]}")
         if spec.has_mobile and build_ok and low_mem and apk_enabled:
             self.log("Мало памяти: Android-приложение собирается после проверок")
             apk_task = asyncio.create_task(builder.build_apk(out / "mobile", api_url, low_memory=True))
@@ -196,14 +227,25 @@ class Pipeline:
                 (self.run_dir / "apk.log").write_text(apk_log, encoding="utf-8")
 
         self.stage("docs", "running")
-        dgen.generate(spec, out, run_dir=self.run_dir, verification=verification,
+        written = dgen.generate(spec, out, run_dir=self.run_dir, verification=verification,
                       telemetry=self.telemetry.summary(), defects=defects, questions=self.state.questions,
                       result=self.state.result, spec_warnings=self.state.result.get("spec_warnings"))
-        self.stage("docs", "done", "13 документов")
+        try:
+            rendered = await diagrams.render(out / "docs")
+        except Exception:  # диаграммы — украшение документации, прогон от них не зависит
+            rendered = 0
+        self.stage("docs", "done", f"{len(written)} документов" + (f", диаграмм: {rendered}" if rendered else ""))
 
         self.stage("publish", "running")
         self._copy_run_artifacts(out)
-        self.stage("publish", "done", str(out))
+        detail = str(out)
+        if gitlab.configured():
+            ok, info = await gitlab.publish(out, spec.slug, f"{spec.product_name}: прототип из бизнес-требований (прогон {self.run_id})")
+            self.log(("Проект опубликован в GitLab: " if ok else "Публикация в GitLab не удалась: ") + info)
+            if ok:
+                self.state.result["gitlab_url"] = info
+                detail = info
+        self.stage("publish", "done", detail)
 
     def _claim_project_dir(self, slug: str) -> Path:
         """Project directory owned by this run; a concurrent run with the same slug gets its own copy."""
@@ -223,20 +265,27 @@ class Pipeline:
         return out
 
     # ------------------------------------------------------------------ stages
-    async def _clarify(self, analysis) -> None:
+    async def _clarify(self, analysis) -> list[str]:
+        """Asks the important questions; returns ids of questions whose answer differs from the default."""
         important = [q for q in analysis.ambiguities if q.impact in ("high", "medium")][:3]
         self.state.questions = [q.model_dump() for q in important]
         self.save()
         answers: dict = {}
         if important and self.answers_provider and self.answer_timeout > 0:
-            self.log(f"Вопросы заказчику: {len(important)}, ожидание ответа до {int(self.answer_timeout)} с")
+            self.log(f"Вопросы заказчику: {len(important)}, ожидание ответа до {int(self.answer_timeout)} с "
+                     "(проектирование уже идёт с ответами по умолчанию)")
             try:
                 answers = await asyncio.wait_for(self.answers_provider(), self.answer_timeout)
             except asyncio.TimeoutError:
                 self.log("Ответов нет — применяю ответы по умолчанию")
+        changed = []
         for q in analysis.ambiguities:
-            q.answer = answers.get(q.id) or q.default_answer
+            given = (answers.get(q.id) or "").strip()
+            if given and given.lower() != (q.default_answer or "").strip().lower():
+                changed.append(q.id)
+            q.answer = given or q.default_answer
         self.state.questions = [q.model_dump() for q in important]
+        return changed
 
     def _assemble(self, analysis, domain, behaviour) -> AppSpec:
         return AppSpec(slug=domain.slug, namespace=domain.namespace, product_name=domain.product_name,
@@ -248,7 +297,7 @@ class Pipeline:
     async def _validate(self, spec, domain, behaviour, requirements, profile, data_files) -> AppSpec:
         context = agents._req_block(requirements, profile, agents.answers_text(spec.analysis))
         for attempt in range(3):
-            fixes = validate.autofix(spec)
+            fixes = validate.autofix(spec, self.case_dir / "data")
             if fixes:
                 self.log("Автоисправления: " + "; ".join(fixes))
             errors = validate.check(spec, data_files, requirements)
@@ -260,7 +309,7 @@ class Pipeline:
                 return spec
             if attempt == 2:
                 break
-            self.log(f"Проверка чертежа: {len(errors)} замечаний → исправление")
+            self.log(f"Проверка чертежа: {len(errors)} замечаний → исправление: " + "; ".join(errors[:4]))
             dom_err = [e for e in errors if not e.startswith(BEHAVIOUR_PREFIXES)]
             beh_err = [e for e in errors if e not in dom_err]
             tasks = []
@@ -286,47 +335,75 @@ class Pipeline:
                 if child.name not in ("backend",):
                     shutil.rmtree(child) if child.is_dir() else child.unlink()
         out.mkdir(parents=True, exist_ok=True)
-        bgen.generate(spec, out, logic, data_dir=self.case_dir / "data")
+        self._render_backend(spec, out, logic)
         fgen.generate(spec, out)
         igen.generate(spec, out)
         if spec.has_mobile:
             mgen.generate(spec, out)
         (out / "spec.yaml").write_text(yaml.safe_dump(spec.model_dump(), allow_unicode=True, sort_keys=False), encoding="utf-8")
 
+    def _render_backend(self, spec: AppSpec, out: Path, logic: dict) -> None:
+        """Backend from templates + current logic, then the patches made by the build loop for generated files."""
+        bgen.generate(spec, out, logic, data_dir=self.case_dir / "data")
+        for rel, content in self.patches.items():
+            target = out / "backend" / rel
+            if target.exists():
+                target.write_text(content, encoding="utf-8")
+
     async def _build_loop(self, spec: AppSpec, out: Path, logic: dict) -> tuple[dict, bool, list[str]]:
         backend = out / "backend"
         solution = f"{spec.namespace}.slnx"
-        defects: list[str] = []
-        for attempt in range(3):
-            bgen.generate(spec, out, logic, data_dir=self.case_dir / "data")
+        defects: list[str] = [f"{name}: {v['failed']}" for name, v in logic.items() if v.get("failed")]
+        attempts = 4
+        prev_errors: dict[str, list[str]] = {}
+        for attempt in range(attempts):
+            self._render_backend(spec, out, logic)
             (self.run_dir / f"logic_{attempt + 1}.json").write_text(json.dumps(logic, ensure_ascii=False, indent=1), encoding="utf-8")
             ok, errors, raw = await builder.build_backend(backend, solution)
             (self.run_dir / f"build_{attempt + 1}.log").write_text(
-                "\n".join(f"{e.file}:{e.line} {e.code} {e.message}" for e in errors), encoding="utf-8")
+                "\n".join(f"{e.file}:{e.line} {e.code} {e.message}" for e in errors) or raw[-3000:], encoding="utf-8")
             if ok:
+                self.build_log = raw
                 self.log(f"Сборка backend успешна (попытка {attempt + 1})")
                 return logic, True, defects
             by_owner: dict[str, list[str]] = {}
-            other: list[str] = []
+            other: dict[str, list[str]] = {}
             for e in errors:
                 owner = coder.file_owner(spec, e.file)
-                (by_owner.setdefault(owner, []) if owner else other).append(f"строка {e.line}: {e.code} {e.message}")
-            self.log(f"Сборка: {len(errors)} ошибок в {len(by_owner)} методах" + (f", вне методов: {len(other)}" if other else ""))
-            if other and not by_owner:
+                bucket = by_owner.setdefault(owner, []) if owner else other.setdefault(e.file, [])
+                bucket.append(f"строка {e.line}: {e.code} {e.message}")
+            self.log(f"Сборка: {len(errors)} ошибок в {len(by_owner)} методах"
+                     + (f", в сгенерированных файлах: {len(other)}" if other else ""))
+            if not errors:
                 (self.run_dir / "build.log").write_text(raw, encoding="utf-8")
                 return logic, False, defects
-            if attempt == 2:
+            if attempt == attempts - 1:
                 for name in by_owner:
                     logic[name] = {"body": coder.FALLBACK, "helpers": "", "usings": []}
-                    defects.append(f"{name}: логика заменена заглушкой после 3 попыток сборки")
-                bgen.generate(spec, out, logic, data_dir=self.case_dir / "data")
+                    defects.append(f"{name}: логика заменена заглушкой после {attempts} попыток сборки")
+                self._render_backend(spec, out, logic)
                 ok, errors, raw = await builder.build_backend(backend, solution)
                 return logic, ok, defects
+            # Та же ошибка после правки: модель вернула прежний код — говорим ей об этом прямо.
+            notes = {name: (["Прошлая правка вернула код с этой же ошибкой. Обязательно измени указанные строки."]
+                            if prev_errors.get(name) == errs else []) for name, errs in by_owner.items()}
+            prev_errors = dict(by_owner)
             fixes = await asyncio.gather(*(
-                coder.fix_logic(self.llm, spec, name, logic[name], self._handler_text(spec, out, name), errs)
+                coder.fix_logic(self.llm, spec, name, logic[name], self._handler_text(spec, out, name), errs + notes[name])
                 for name, errs in by_owner.items()))
             for name, fixed in zip(by_owner, fixes):
                 logic[name] = fixed
+            # Ошибки в шаблонном коде (необычные имена/типы из модели): точечная правка файла, правка сохраняется.
+            files = list(other.items())[:6]
+            patches = await asyncio.gather(*(
+                coder.fix_file(self.llm, rel, (backend / rel).read_text(encoding="utf-8"), errs)
+                for rel, errs in files if (backend / rel).exists()))
+            for (rel, _), content in zip(files, patches):
+                if content:
+                    self.patches[rel] = content
+                    defects.append(f"{rel}: сгенерированный файл исправлен моделью после ошибки компиляции")
+            if files:
+                self.log(f"Исправлено сгенерированных файлов: {sum(1 for c in patches if c)} из {len(files)}")
         return logic, False, defects
 
     def _handler_text(self, spec: AppSpec, out: Path, name: str) -> str:
@@ -346,24 +423,58 @@ class Pipeline:
         if not spec.demo or not spec.demo.steps:
             return result
         self.stage("verify", "running", "развёртывание стенда и прогон демо-сценария")
-        deployed, log, ports = await runtime.deploy(out, spec.slug)
+        # Чистая БД: том от прошлого прогона с тем же именем проекта хранит старую схему (миграция уже «применена»).
+        deployed, log, ports = await runtime.redeploy_clean(out, spec.slug)
         if not deployed:
-            self.log("Развёртывание не удалось: " + log[-300:])
-            (self.run_dir / "deploy.log").write_text(log, encoding="utf-8")
+            _, backend_log = await builder.run(["docker", "compose", "logs", "backend", "--no-color", "--tail", "120"],
+                                               cwd=out, timeout=60)
+            cause = next((ln.split("|", 1)[-1].strip() for ln in backend_log.splitlines()
+                          if "Unhandled exception" in ln or "Exception:" in ln), "")
+            self.log("Развёртывание не удалось: " + (cause[:300] or log[-300:]))
+            (self.run_dir / "deploy.log").write_text(log + "\n\n=== backend ===\n" + backend_log, encoding="utf-8")
             return result
         api = f"http://localhost:{ports['API_PORT']}"
         self.state.result["web_url"] = f"http://localhost:{ports['WEB_PORT']}"
         self.state.result["api_url"] = api
         best: tuple[int, dict, dict] | None = None
+        prev_targets: set[str] = set()
+        stalled = False
         for round_no in range(3):
             since = time.time() - 2
             status = await runtime.run_demo(spec, api)
             steps = status.get("steps", [])
             passed = sum(1 for st in steps if st.get("status") == "done")
             self.log(f"Демо-сценарий: {passed}/{len(steps)} шагов (раунд {round_no + 1})")
+            round_targets = set(runtime.failed_targets(spec, status))
+            same = best is not None and passed <= best[0] and round_targets == prev_targets
+            if same and stalled:
+                # Две попытки исправить те же методы не помогли: дальше тратить токены и время бессмысленно.
+                self.log("Исправление не улучшило результат — остановка исправлений")
+                result["demo"] = status
+                break
+            prev_targets, stalled = round_targets, same
             if best is None or passed > best[0]:
                 best = (passed, json.loads(json.dumps(logic)), status)
             result["demo"] = status
+            # Строка длиннее поля БД (номер, код, который генерирует система): расширяем поле в модели — без кодера.
+            widened, seen_fields = [], set()
+            for st in steps:
+                m = re.search(r"превышает допустимую длину поля: ([\w., ]+)", st.get("detail") or "")
+                for ref in (m.group(1).split(",") if m else []):
+                    ent, _, fname = ref.strip().partition(".")
+                    e = spec.entity(ent)
+                    f = next((x for x in (e.fields if e else []) if x.name.lower() == fname.lower()), None)
+                    if f and (ent, f.name) not in seen_fields and f.type in ("string", "email", "phone", "url") and (f.max_length or 0) < 500:
+                        seen_fields.add((ent, f.name))
+                        f.max_length = max(64, (f.max_length or 0) * 2)
+                        widened.append(f"{ent}.{f.name} → {f.max_length}")
+            if widened and round_no < 2:
+                self.log("Расширены поля БД: " + ", ".join(widened))
+                self._render_backend(spec, out, logic)
+                deployed, log, ports = await runtime.redeploy_backend(out, spec.slug)
+                if not deployed:
+                    break
+                continue
             targets = runtime.failed_targets(spec, status)
             targets = {k: v for k, v in targets.items() if k in logic}
             if not targets or round_no == 2:
@@ -372,14 +483,16 @@ class Pipeline:
             self.log("Исправление по результатам прогона: " + ", ".join(targets))
             fixes = await asyncio.gather(*(
                 coder.fix_logic(self.llm, spec, name, logic[name], self._handler_text(spec, out, name),
-                                errs + [f"Исключение на сервере: {c}" for c in causes], runtime=True)
+                                errs + [f"Исключение на сервере: {c}" for c in causes]
+                                + (["Прошлое исправление этого метода не помогло: шаг падает так же. Найди другую причину "
+                                    "и проверь условия выборки, статусы и сравнения id."] if stalled else []), runtime=True)
                 for name, errs in targets.items()))
             candidate = dict(logic)
             for name, fixed in zip(targets, fixes):
                 candidate[name] = fixed
             built = False
             for _ in range(3):
-                bgen.generate(spec, out, candidate, data_dir=self.case_dir / "data")
+                self._render_backend(spec, out, candidate)
                 built, errors, _ = await builder.build_backend(backend, f"{spec.namespace}.slnx")
                 if built:
                     break
@@ -396,10 +509,10 @@ class Pipeline:
                 candidate.update(dict(zip(broken, fixed)))
             if not built:
                 self.log("Исправление не скомпилировалось — оставляю предыдущую версию")
-                bgen.generate(spec, out, logic, data_dir=self.case_dir / "data")
+                self._render_backend(spec, out, logic)
                 break
             logic.update(candidate)
-            deployed, log, ports = await runtime.redeploy_clean(out, spec.slug)
+            deployed, log, ports = await runtime.redeploy_backend(out, spec.slug)
             if not deployed:
                 break
         if best and best[0] > sum(1 for st in (result["demo"] or {}).get("steps", []) if st.get("status") == "done"):
@@ -407,7 +520,7 @@ class Pipeline:
             logic.clear()
             logic.update(best[1])
             result["demo"] = best[2]
-            bgen.generate(spec, out, logic, data_dir=self.case_dir / "data")
+            self._render_backend(spec, out, logic)
             await builder.build_backend(backend, f"{spec.namespace}.slnx")
             await runtime.redeploy_clean(out, spec.slug)
         self.stage("verify", "running", "запись видео демо-сценария")

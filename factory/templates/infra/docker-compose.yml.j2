@@ -3,6 +3,7 @@
 services:
   db:
     image: postgis/postgis:17-3.5
+    restart: unless-stopped
     platform: linux/amd64
     environment:
       POSTGRES_DB: app
@@ -21,6 +22,7 @@ services:
 
   kafka:
     image: apache/kafka:3.9.1
+    restart: unless-stopped
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -45,12 +47,14 @@ services:
 
   mocks:
     build: ./mocks
+    restart: unless-stopped
     ports:
       - "${MOCKS_PORT:-8081}:8080"
 {% endif %}
 
   backend:
     build: ./backend
+    restart: unless-stopped
     environment:
       ConnectionStrings__Default: Host=db;Port=5432;Database=app;Username=app;Password=${DB_PASSWORD:-app-local-dev}
       Kafka__BootstrapServers: {{ 'kafka:9092' if spec.events else '' }}
@@ -75,6 +79,7 @@ services:
 
   frontend:
     build: ./frontend
+    restart: unless-stopped
     depends_on:
       backend:
         condition: service_healthy

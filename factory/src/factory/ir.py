@@ -253,7 +253,7 @@ class Screen(BaseModel):
 class DemoStep(BaseModel):
     id: str
     title: str
-    action: Literal["route", "operation", "create", "advance_time", "transition", "expect"]
+    action: Literal["route", "operation", "create", "advance_time", "transition", "expect", "view"]
     operation: str | None = None
     entity: str | None = None
     transition: str | None = None
@@ -273,6 +273,7 @@ class Requirement(BaseModel):
     text: str
     priority: Literal["must", "should", "could"] = "must"
     source: Literal["customer", "assumption"] = "customer"
+    trace: str = PField(default="", description="Пункт бизнес-требований, из которого следует требование")
 
 
 class AcceptanceCriterion(BaseModel):
@@ -296,11 +297,17 @@ class Ambiguity(BaseModel):
 
 
 class Scenario(BaseModel):
-    id: str
+    """Сценарий использования (UseCase) в формате регламента."""
+
+    id: str = PField(description="UC-001")
     title: str
     actor: str
-    steps: list[str]
-    alternatives: list[str] = []
+    preconditions: list[str] = []
+    steps: list[str] = PField(description="Основной поток: пронумерованные шаги пользователя и системы")
+    alternatives: list[str] = PField(default=[], description="Альтернативные потоки")
+    exceptions: list[str] = PField(default=[], description="Исключения: ошибки и реакция системы")
+    postconditions: list[str] = []
+    expected_result: str = ""
 
 
 class Analysis(BaseModel):

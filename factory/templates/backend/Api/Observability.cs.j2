@@ -1,0 +1,180 @@
+// Сгенерировано фабрикой из IR: {{spec.slug}}
+// Мониторинг по шаблону описания сервиса: /metrics (Prometheus), /health (Healthy / Degraded / Unhealthy), перезапуск.
+using System.Diagnostics;
+using System.Text.Json;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Controllers;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
+using {{N}}.Application.Common;
+using {{N}}.Infrastructure.Persistence;
+
+namespace {{N}}.Api.Infrastructure;
+
+/// <summary>Счётчики HTTP-запросов и бизнес-операций по шаблону маршрута (без идентификаторов в метках).</summary>
+public sealed class MetricsMiddleware(RequestDelegate next)
+{
+    public async Task InvokeAsync(HttpContext ctx)
+    {
+        var started = Stopwatch.GetTimestamp();
+        try
+        {
+            await next(ctx);
+        }
+        finally
+        {
+            var endpoint = ctx.GetEndpoint();
+            var route = (endpoint as RouteEndpoint)?.RoutePattern.RawText ?? "unmatched";
+            if (route != "metrics")
+            {
+                var code = ctx.Response.StatusCode.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var labels = $"{AppMetrics.Label("code", code)},{AppMetrics.Label("method", ctx.Request.Method)},{AppMetrics.Label("route", route)}";
+                AppMetrics.Inc("http_requests_received_total", labels);
+                AppMetrics.Observe("http_request_duration_seconds",
+                    $"{AppMetrics.Label("method", ctx.Request.Method)},{AppMetrics.Label("route", route)}",
+                    Stopwatch.GetElapsedTime(started).TotalSeconds);
+                var action = endpoint?.Metadata.GetMetadata<ControllerActionDescriptor>();
+                if (action?.ControllerName == "Operations")
+                    AppMetrics.Inc("app_operations_total", $"{AppMetrics.Label("operation", action.ActionName)},{AppMetrics.Label("result", ctx.Response.StatusCode < 400 ? "ok" : "error")}");
+            }
+        }
+    }
+}
+
+{% if spec.events %}
+/// <summary>Kafka и очередь outbox: брокер недоступен или события копятся → Degraded (данные сохраняются, события ждут).</summary>
+public sealed class EventsHealthCheck(IServiceScopeFactory scopes, IConfiguration cfg) : IHealthCheck
+{
+    public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken ct = default)
+    {
+        using var scope = scopes.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var pending = await db.OutboxEvents.CountAsync(x => x.PublishedAt == null, ct);
+        var data = new Dictionary<string, object> { ["outboxPending"] = pending };
+        var bootstrap = cfg["Kafka:BootstrapServers"];
+        if (string.IsNullOrWhiteSpace(bootstrap))
+            return HealthCheckResult.Degraded("Kafka не настроена: события остаются в outbox", data: data);
+        try
+        {
+            using var admin = new Confluent.Kafka.AdminClientBuilder(new Confluent.Kafka.AdminClientConfig { BootstrapServers = bootstrap }).Build();
+            admin.GetMetadata(TimeSpan.FromSeconds(2));
+        }
+        catch (Exception ex)
+        {
+            return HealthCheckResult.Degraded("Kafka недоступна: " + ex.Message, data: data);
+        }
+        return pending > 100
+            ? HealthCheckResult.Degraded($"В outbox {pending} неотправленных событий", data: data)
+            : HealthCheckResult.Healthy("Kafka доступна", data);
+    }
+}
+{% endif %}
+{% if spec.integrations %}
+
+/// <summary>Внешние системы (mock-сервис): недоступность → Degraded, операции с интеграцией вернут 502.</summary>
+public sealed class IntegrationsHealthCheck(IHttpClientFactory http, IConfiguration cfg) : IHealthCheck
+{
+    public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken ct = default)
+    {
+        var baseUrl = cfg["Integrations:BaseUrl"] ?? "http://mocks:8080/";
+        try
+        {
+            using var client = http.CreateClient();
+            client.Timeout = TimeSpan.FromSeconds(2);
+            var response = await client.GetAsync(new Uri(new Uri(baseUrl), "health"), ct);
+            return response.IsSuccessStatusCode ? HealthCheckResult.Healthy("Внешние системы доступны")
+                : HealthCheckResult.Degraded($"Внешние системы отвечают {(int)response.StatusCode}");
+        }
+        catch (Exception ex)
+        {
+            return HealthCheckResult.Degraded("Внешние системы недоступны: " + ex.Message);
+        }
+    }
+}
+{% endif %}
+
+public static class Observability
+{
+    public static IServiceCollection AddObservability(this IServiceCollection services)
+    {
+        var checks = services.AddHealthChecks().AddDbContextCheck<AppDbContext>("database", HealthStatus.Unhealthy, tags: ["ready"]);
+{% if spec.events %}
+        checks.AddCheck<EventsHealthCheck>("events", HealthStatus.Degraded);
+{% endif %}
+{% if spec.integrations %}
+        checks.AddCheck<IntegrationsHealthCheck>("integrations", HealthStatus.Degraded);
+{% endif %}
+        return services;
+    }
+
+    public static void MapObservability(this WebApplication app)
+    {
+        app.MapHealthChecks("/health", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+        {
+            ResultStatusCodes =
+            {
+                [HealthStatus.Healthy] = StatusCodes.Status200OK,
+                [HealthStatus.Degraded] = StatusCodes.Status200OK,
+                [HealthStatus.Unhealthy] = StatusCodes.Status503ServiceUnavailable,
+            },
+            ResponseWriter = (ctx, report) =>
+            {
+                ctx.Response.ContentType = "application/json; charset=utf-8";
+                return ctx.Response.WriteAsync(JsonSerializer.Serialize(new
+                {
+                    status = report.Status.ToString(),
+                    durationMs = (int)report.TotalDuration.TotalMilliseconds,
+                    checks = report.Entries.ToDictionary(e => e.Key, e => new
+                    {
+                        status = e.Value.Status.ToString(),
+                        description = e.Value.Description ?? e.Value.Exception?.Message,
+                        data = e.Value.Data,
+                    }),
+                }));
+            },
+        });
+        app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions { Predicate = _ => false });
+        app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions { Predicate = c => c.Tags.Contains("ready") });
+        app.MapGet("/metrics", async (HttpContext ctx, AppDbContext db) =>
+        {
+            var p = Process.GetCurrentProcess();
+            var gauges = new List<(string, string, string, string, double)>
+            {
+                ("process_working_set_bytes", "Используемая память процесса", "gauge", "", p.WorkingSet64),
+                ("process_cpu_seconds_total", "Процессорное время", "counter", "", p.TotalProcessorTime.TotalSeconds),
+                ("process_start_time_seconds", "Время запуска процесса (unix)", "gauge", "", new DateTimeOffset(p.StartTime.ToUniversalTime()).ToUnixTimeSeconds()),
+                ("dotnet_total_memory_bytes", "Управляемая куча .NET", "gauge", "", GC.GetTotalMemory(false)),
+                ("dotnet_threadpool_threads", "Потоки пула", "gauge", "", ThreadPool.ThreadCount),
+            };
+            for (var gen = 0; gen <= GC.MaxGeneration; gen++)
+                gauges.Add(("dotnet_gc_collections_total", "Сборки мусора по поколениям", "counter", AppMetrics.Label("generation", gen.ToString(System.Globalization.CultureInfo.InvariantCulture)), GC.CollectionCount(gen)));
+{% if spec.events %}
+            gauges.Add(("app_outbox_pending", "Неотправленные доменные события", "gauge", "", await db.OutboxEvents.CountAsync(x => x.PublishedAt == null, ctx.RequestAborted)));
+{% endif %}
+            return Results.Text(AppMetrics.Render(gauges), "text/plain; version=0.0.4; charset=utf-8");
+        }).ExcludeFromDescription();
+    }
+}
+
+/// <summary>Администрирование сервиса: перезапуск при состоянии Unhealthy (контейнер поднимает Docker, restart: unless-stopped).</summary>
+[ApiController]
+[Authorize(Roles = "{{ admin_roles | join(',') }}")]
+[Route("api/v1/admin")]
+[Tags("Администрирование")]
+public sealed class AdminController(IHostApplicationLifetime lifetime, ILogger<AdminController> log) : ControllerBase
+{
+    /// <summary>Перезапуск сервиса: процесс завершается, Docker запускает его заново.</summary>
+    [HttpPost("restart")]
+    public IActionResult Restart()
+    {
+        log.LogWarning("Перезапуск сервиса по запросу администратора {User}", User.Identity?.Name);
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(500);
+            lifetime.StopApplication();
+        });
+        return Accepted(new { status = "restarting" });
+    }
+}

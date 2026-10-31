@@ -3,7 +3,7 @@
 
 - Базовый путь: `/api/v1`, версия в пути и в заголовке ответа `api-version`.
 - Аутентификация: `POST /api/v1/auth/login` → `{token}`; далее заголовок `Authorization: Bearer <token>`.
-- Ошибки: `application/problem+json` (см. системный анализ, раздел 12).
+- Ошибки: `application/problem+json` (см. описание методов API, раздел «Неуспешная обработка запроса», и системный анализ, раздел 3.2.4).
 - Ограничение частоты: 1200 запросов/мин на пользователя, 30/мин на вход; превышение — 429.
 - Идемпотентность: заголовок `Idempotency-Key` для POST — повтор возвращает сохранённый ответ (`Idempotent-Replayed: true`).
 - Журналирование: каждый запрос пишется в структурированный JSON-лог с `X-Correlation-Id`.
@@ -60,7 +60,7 @@
 | {{e.title}} | `{{table(e)}}` | {{ e.fields | length }} | {{ e.fields | selectattr('type', 'equalto', 'ref') | map(attribute='ref') | join(', ') or '—' }} | {{ e.geo_fields | map(attribute='name') | join(', ') or '—' }} |
 {% endfor %}
 
-Подробные таблицы полей, ER-диаграмма и правила импорта — в [системном анализе, раздел 8](01-system-analysis.md#8-модель-данных).
+Подробные таблицы полей, ER-диаграмма и правила импорта — в [системном анализе, раздел 3.2.3](01-system-analysis.md).
 {% endmacro %}
 
 {% macro events() %}
@@ -181,17 +181,18 @@ id обработанных событий и пропускает повтор�
 
 ## 1. Качество анализа (20)
 
-- Интерпретация требований и полнота: [системный анализ](01-system-analysis.md) — {{ a.functional | length }} ФТ, {{ a.non_functional | length }} НФТ, {{ a.scenarios | length }} сценариев, все 14 разделов.
-- Критерии приёмки: {{ a.acceptance | length }} в формате Дано/Когда/Тогда — [раздел 13](01-system-analysis.md#13-критерии-приёмки).
-- Неоднозначности: {{ a.ambiguities | length }} с влиянием, вариантами и принятым решением — [раздел 14](01-system-analysis.md#14-допущения-и-открытые-вопросы).
-- Допущения отделены от требований заказчика (поле «Источник» в разделе 5).
+- Документ системного анализа по регламенту и шаблону ТЗ: [01-system-analysis.md](01-system-analysis.md) — история изменений, лист согласования, термины, цели, условия и ограничения, UseCase, UML (PlantUML), ФТ с трассировкой к БТ, спецификация ЭФ, БД, API, интеграции, метрики, НФТ по разделам 4.1–4.5.
+- {{ a.functional | length }} ФТ (FR-N, источник: заказчик / допущение, трассировка к БТ), {{ a.non_functional | length }} НФТ, {{ a.scenarios | length }} сценариев использования в формате UseCase.
+- Критерии приёмки: {{ a.acceptance | length }} в формате Дано / Когда / Тогда, у каждого ФТ — раздел 2.4.6.
+- Неоднозначности: {{ a.ambiguities | length }} с влиянием, вариантами и принятым решением; допущения отделены от требований — раздел 5.
+- Неприменимые разделы шаблонов отмечены с обоснованием (например, макеты Figma, Prod/Stage окружения).
 
 ## 2. Качество продукта и интерфейса (15)
 
-- Angular Material, проверка соответствия UI Kit линтером (`frontend/scripts/uikit-lint.mjs`) при каждой сборке.
+- UI Kit Angular Material, проверка соответствия линтером (`frontend/scripts/uikit-lint.mjs`) при каждой сборке; спецификация ЭФ — раздел 3.1.1.
 - Состояния: загрузка, пусто, ошибка, нет доступа (`frontend/src/app/shared/view-state.component.ts`), адаптивная вёрстка.
 {% if spec.has_mobile %}
-- Мобильное приложение: `mobile/` (Kotlin + Compose, Material 3).
+- Мобильное приложение: `mobile/` (Kotlin 2.2 + Jetpack Compose, Material 3){% if result.get('apk') %}, APK собран конвейером{% endif %}.
 {% endif %}
 {% if spec.demo %}
 - Демо-сценарий из требований исполняется одной кнопкой («Демо-сценарий»){% if verification.get('video') %}; видеозапись прогона — [demo.webm](demo.webm){% endif %}.
@@ -199,25 +200,31 @@ id обработанных событий и пропускает повтор�
 
 ## 3. Архитектура и разработка (20)
 
-- Слои Domain / Application / Infrastructure / Api — [архитектура](03-architecture.md).
-- API и модель данных согласованы с документацией по построению (единая модель `spec.yaml`).
-- Outbox + Kafka, идемпотентный консьюмер, адаптеры интеграций, `TimeProvider`.
+- Слои Domain / Application / Infrastructure / Api — [архитектура](03-architecture.md), решения — [ADR](adr/).
+- API, модель данных и документация согласованы по построению (единая модель `spec.yaml`); методы API описаны по шаблону — [api/methods](api/methods/).
+- Описание сервиса по шаблону: [service.md](service.md) — ресурсы, окружения, сборка, деплой, переменные CI/CD, мониторинг.
+{% if spec.events %}
+- Transactional outbox + Kafka, идемпотентный консьюмер, схема событий — [asyncapi.yaml](asyncapi.yaml).
+{% endif %}
 
 ## 4. Тестирование и безопасность (15)
 
-- [Отчёт о тестировании](10-test-report.md), [трассировка](traceability.md), [отчёт о безопасности](11-security-report.md).
+- [Отчёт о тестировании](10-test-report.md), [трассировка требований к тестам](traceability.md).
+- [Отчёт о безопасности](11-security-report.md){% if result.get('security_status') %}: итоговый статус — **{{ result.get('security_status') }}** (уязвимые зависимости NuGet и npm, секреты Gitleaks, статический анализ .NET; в CI дополнительно Trivy и Semgrep){% endif %}.
 
 ## 5. Инфраструктура (10)
 
-- `docker-compose.yml` с health checks, миграции и тестовые данные при старте, `.gitlab-ci.yml`, [инструкция](07-runbook.md).
+- `docker-compose.yml`: health checks, `restart: unless-stopped`, миграции и тестовые данные при старте; `.gitlab-ci.yml` (build → test → security → package → deploy), [инструкция по запуску](07-runbook.md).
+- Мониторинг: `/metrics` (Prometheus), `/health` — Healthy / Degraded / Unhealthy, перезапуск `POST /api/v1/admin/restart`.
 
 ## 6. Документация (10)
 
-- [Продукт](02-product.md), [архитектура](03-architecture.md), [API](04-api.md) + OpenAPI, [запуск](07-runbook.md), [руководство пользователя](08-user-guide.md), [разработчика](09-dev-guide.md).
+- [Продукт](02-product.md), [архитектура](03-architecture.md), [API](04-api.md) + OpenAPI, [модель данных](05-data-model.md), [запуск](07-runbook.md), [руководство пользователя](08-user-guide.md), [разработчика](09-dev-guide.md), [ограничения](12-limitations.md).
 
 ## 7. Эффективность конвейера (10)
 
 - [Отчёт конвейера](pipeline-report.md): {{ telemetry.calls }} вызовов модели, {{ telemetry.prompt_tokens + telemetry.completion_tokens }} токенов, повторов генерации — {{ telemetry.retries }}, ручных правок — 0.
+- Клиент модели планирует запросы под лимиты ключа (токены в минуту, параллельные запросы) — отказов 429 нет; детерминированные исправления модели без повторных вызовов LLM.
 {% endmacro %}
 
 {% macro pipeline_report() %}

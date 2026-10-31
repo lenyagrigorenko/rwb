@@ -90,7 +90,7 @@ public sealed class DemoScenarioRunner(IServiceScopeFactory scopes, IHttpClientF
             if (Script["timeBase"]?.GetValue<bool>() == true)
             {
                 // Времена из сценария отсчитываются от ближайшей «круглой» отметки (шаг 15 мин) через час.
-                var target = clock.GetUtcNow().AddMinutes(60);
+                var target = clock.GetUtcNow().AddMinutes(Script["timeBaseOffset"]?.GetValue<int>() ?? 60);
                 var aligned = new DateTimeOffset(target.Ticks - target.Ticks % TimeSpan.FromMinutes(15).Ticks, TimeSpan.Zero).AddMinutes(15);
                 clock.Advance(aligned - target);
                 _timeBase = aligned;
@@ -110,13 +110,16 @@ public sealed class DemoScenarioRunner(IServiceScopeFactory scopes, IHttpClientF
                         {
                             using var scope = scopes.CreateScope();
                             var planner = scope.ServiceProvider.GetRequiredService<IDemoRoutePlanner>();
-                            route ??= await planner.PlanAsync(step["layer"]!.ToString(), step["zones"]!.GetValue<int>(), ct);
+                            route ??= await planner.PlanAsync(step["layer"]?.ToString(), step["zones"]?.GetValue<int>() ?? 2, ct,
+                                Guid.TryParse(step["targetVar"] is { } tv && vars.TryGetValue(tv.ToString(), out var tid) ? tid : null, out var g) ? g : null);
                             var leg = route.Legs[Math.Min(step["leg"]!.GetValue<int>(), route.Legs.Count - 1)];
                             var (client, userId) = await ClientAsync(step["login"]!.ToString(), ct);
-                            var path = await ResolvePathAsync(step["path"]!.ToString(), userId, vars, ct);
+                            var path = await ResolvePathAsync(step["path"]!.ToString(), userId, vars, ct, step["login"]?.ToString());
                             foreach (var p in leg)
                             {
-                                var body = new JsonObject { [step["latField"]!.ToString()] = p.Lat, [step["lonField"]!.ToString()] = p.Lon };
+                                var body = step["pointField"] is { } pf
+                                    ? new JsonObject { [pf.ToString()] = new JsonObject { ["type"] = "Point", ["coordinates"] = new JsonArray(p.Lon, p.Lat) } }
+                                    : new JsonObject { [step["latField"]!.ToString()] = p.Lat, [step["lonField"]!.ToString()] = p.Lon };
                                 foreach (var (k, v) in step["extra"]?.AsObject() ?? new JsonObject()) body[k] = Special(v);
                                 await SendAsync(client, step["method"]!.ToString(), path, body, ct);
                                 await Task.Delay(TimeSpan.FromMilliseconds(900), ct);
@@ -127,10 +130,11 @@ public sealed class DemoScenarioRunner(IServiceScopeFactory scopes, IHttpClientF
                         case "operation":
                         {
                             var (client, userId) = await ClientAsync(step["login"]!.ToString(), ct);
-                            var path = await ResolvePathAsync(step["path"]!.ToString(), userId, vars, ct);
+                            var path = await ResolvePathAsync(step["path"]!.ToString(), userId, vars, ct, step["login"]?.ToString());
                             var args = step["args"]?.DeepClone()?.AsObject() ?? new JsonObject();
                             foreach (var key in args.Select(kv => kv.Key).ToList()) args[key] = Special(args[key]);
-                            await ResolveArgsAsync(args, step["resolve"]?.AsObject(), userId, vars, ct);
+                            await ResolveArgsAsync(args, step["resolve"]?.AsObject(), userId, vars, ct, step["login"]?.ToString());
+                            await ResolvePlaceholderIdsAsync(args, userId, vars, ct);
                             if (step["expectError"]?.GetValue<bool>() == true)
                             {
                                 try
@@ -146,14 +150,39 @@ public sealed class DemoScenarioRunner(IServiceScopeFactory scopes, IHttpClientF
                                 break;
                             }
                             var result = await SendAsync(client, step["method"]!.ToString(), path, args, ct);
-                            if (result?["id"] is { } id && step["outputVar"] is { } outVar) vars[outVar.ToString()] = id.ToString();
+                            // Поиск вернул список («найти свободный слот») — первая найденная запись становится текущей.
+                            var found = result is JsonArray list && list.Count > 0 ? list[0] as JsonObject
+                                : result is JsonObject page && page["items"] is JsonArray items && items.Count > 0 ? items[0] as JsonObject : null;
+                            if (found?["id"] is { } foundId && step["outputVar"] is { } listVar) vars[listVar.ToString()] = foundId.ToString();
+                            if (result is JsonObject created && created["id"] is { } newId && step["thenTransitions"] is JsonArray chain)
+                            {
+                                // Запись создана в начальном статусе — переводим в статус, который задан в сценарии.
+                                foreach (var t in chain)
+                                {
+                                    var (tc, _) = await ClientAsync(t!["login"]!.ToString(), ct);
+                                    result = await SendAsync(tc, "POST", t["path"]!.ToString().Replace("{id}", newId.ToString()), new JsonObject(), ct) ?? result;
+                                }
+                            }
+                            if (result is JsonObject ro && ro["id"] is { } id && step["outputVar"] is { } outVar)
+                            {
+                                // Запись «своя» для пользователя шага; операция над существующей записью не меняет «последнюю созданную».
+                                vars[$"{outVar}@{step["login"]}"] = id.ToString();
+                                if (step["updatesExisting"]?.GetValue<bool>() != true) vars[outVar.ToString()] = id.ToString();
+                            }
                             state.Detail = Summarize(result);
+                            break;
+                        }
+                        case "view":
+                        {
+                            var (client, _) = await ClientAsync(step["login"]!.ToString(), ct);
+                            var page = await SendAsync(client, "GET", step["path"]!.ToString(), new JsonObject { ["pageSize"] = 5 }, ct);
+                            state.Detail = $"Записей: {(page is JsonObject po ? po["total"]?.ToString() ?? "—" : "—")}";
                             break;
                         }
                         case "transition":
                         {
                             var (client, userId) = await ClientAsync(step["login"]!.ToString(), ct);
-                            var path = await ResolvePathAsync(step["path"]!.ToString(), userId, vars, ct);
+                            var path = await ResolvePathAsync(step["path"]!.ToString(), userId, vars, ct, step["login"]?.ToString());
                             var result = await SendAsync(client, "POST", path, new JsonObject(), ct);
                             state.Detail = Summarize(result);
                             break;
@@ -161,9 +190,10 @@ public sealed class DemoScenarioRunner(IServiceScopeFactory scopes, IHttpClientF
                         case "advance_time":
                         {
                             var minutes = step["minutes"]?.GetValue<int>() ?? 0;
-                            clock.Advance(TimeSpan.FromMinutes(minutes));
+                            var jumped = step["jumpTo"] is JsonObject jump ? await JumpToAsync(jump, vars, ct) : null;
+                            if (jumped is null) clock.Advance(TimeSpan.FromMinutes(minutes));
                             await jobs.RunAllAsync(true, ct);
-                            state.Detail = $"Часы сдвинуты на {minutes} мин";
+                            state.Detail = jumped ?? $"Часы сдвинуты на {minutes} мин";
                             break;
                         }
                         case "expect":
@@ -250,13 +280,45 @@ public sealed class DemoScenarioRunner(IServiceScopeFactory scopes, IHttpClientF
             .Take(4).Select(kv => $"{kv.Key}: {kv.Value}"));
     }
 
-    private async Task<string> ResolvePathAsync(string template, Guid userId, Dictionary<string, string> vars, CancellationToken ct)
+    /// <summary>Перед проверкой напоминания часы переводятся внутрь окна напоминания до времени записи.</summary>
+    private async Task<string?> JumpToAsync(JsonObject jump, Dictionary<string, string> vars, CancellationToken ct)
+    {
+        if (!vars.TryGetValue(jump["var"]!.ToString(), out var raw) || !Guid.TryParse(raw, out var id)) return null;
+        using var scope = scopes.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        await db.Database.OpenConnectionAsync(ct);
+        try
+        {
+            await using var cmd = new Npgsql.NpgsqlCommand(jump["sql"]!.ToString(), (Npgsql.NpgsqlConnection)db.Database.GetDbConnection());
+            cmd.Parameters.AddWithValue("id", id);
+            DateTimeOffset? at = await cmd.ExecuteScalarAsync(ct) switch
+            {
+                DateTimeOffset d => d,
+                DateTime d => new DateTimeOffset(DateTime.SpecifyKind(d, DateTimeKind.Utc)),
+                _ => null,
+            };
+            if (at is not { } time) return null;
+            var lead = jump["leadMinutes"]?.GetValue<int>() ?? 60;
+            var now = clock.GetUtcNow();
+            var target = time.AddMinutes(-lead);
+            if (target <= now) return null;
+            clock.Advance(target - now);
+            return $"Часы переведены на {AppTime.Hm(target)} {target:dd.MM}: до времени записи ({AppTime.Hm(time)}) {lead} мин";
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
+    }
+
+    private async Task<string> ResolvePathAsync(string template, Guid userId, Dictionary<string, string> vars, CancellationToken ct, string? login = null)
     {
         var path = template;
         foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(template, @"\{(\w+)\}"))
         {
             var name = m.Groups[1].Value;
-            if (!vars.TryGetValue(name, out var value))
+            // Сначала запись, созданная этим же пользователем («первый участник отменяет свою регистрацию»).
+            if (!(login is not null && vars.TryGetValue($"{name}@{login}", out var value)) && !vars.TryGetValue(name, out value))
             {
                 // {requestId} может ссылаться на переменную maintenanceRequestId (имя сущности длиннее параметра).
                 value = vars.FirstOrDefault(kv => kv.Key.EndsWith(name, StringComparison.OrdinalIgnoreCase)
@@ -272,8 +334,35 @@ public sealed class DemoScenarioRunner(IServiceScopeFactory scopes, IHttpClientF
         return path;
     }
 
+    /// <summary>Условные id в любом месте тела («prod-1» в позициях заказа) — реальные id записей той же сущности.</summary>
+    private async Task ResolvePlaceholderIdsAsync(JsonNode? node, Guid userId, Dictionary<string, string> vars, CancellationToken ct)
+    {
+        switch (node)
+        {
+            case JsonObject obj:
+                foreach (var key in obj.Select(kv => kv.Key).ToList())
+                {
+                    var value = obj[key];
+                    if (key.EndsWith("Id", StringComparison.Ordinal) && value is JsonValue v && v.TryGetValue<string>(out var s)
+                        && !Guid.TryParse(s, out _) && !string.IsNullOrWhiteSpace(s))
+                    {
+                        var id = vars.TryGetValue(key, out var known) ? known : (await ResolveParamAsync(key, userId, ct))?.ToString();
+                        if (id is not null) obj[key] = id;
+                    }
+                    else
+                    {
+                        await ResolvePlaceholderIdsAsync(value, userId, vars, ct);
+                    }
+                }
+                break;
+            case JsonArray arr:
+                foreach (var item in arr) await ResolvePlaceholderIdsAsync(item, userId, vars, ct);
+                break;
+        }
+    }
+
     /// <summary>Заменяет условные значения аргументов демо-шага реальными: id записей, пользователей, координаты объекта.</summary>
-    private async Task ResolveArgsAsync(JsonObject args, JsonObject? resolve, Guid userId, Dictionary<string, string> vars, CancellationToken ct)
+    private async Task ResolveArgsAsync(JsonObject args, JsonObject? resolve, Guid userId, Dictionary<string, string> vars, CancellationToken ct, string? actor = null)
     {
         if (resolve is null) return;
         foreach (var (key, spec) in resolve)
@@ -284,7 +373,22 @@ public sealed class DemoScenarioRunner(IServiceScopeFactory scopes, IHttpClientF
                 case "entity":
                 {
                     var name = spec!["var"]!.ToString();
-                    if (!vars.TryGetValue(name, out var id))
+                    var nth = spec["nth"]?.GetValue<int>() ?? 0;
+                    string? id;
+                    if (nth > 0)
+                    {
+                        // Вторая ссылка на ту же сущность в одном шаге: другая запись, не та, что уже подставлена.
+                        var used = args.Select(kv => kv.Value?.ToString()).ToHashSet();
+                        id = null;
+                        for (var k = nth; k < nth + 5 && id is null; k++)
+                        {
+                            var candidate = (await ResolveParamAsync(name, userId, ct, k))?.ToString();
+                            if (candidate is null) break;
+                            if (!used.Contains(candidate)) id = candidate;
+                        }
+                        id ??= "";
+                    }
+                    else if (!(actor is not null && vars.TryGetValue($"{name}@{actor}", out id)) && !vars.TryGetValue(name, out id))
                     {
                         id = (await ResolveParamAsync(name, userId, ct))?.ToString() ?? "";
                         if (id.Length > 0) vars[name] = id;
@@ -320,6 +424,40 @@ public sealed class DemoScenarioRunner(IServiceScopeFactory scopes, IHttpClientF
                     args[key] = local.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture);
                     break;
                 }
+                case "field":
+                {
+                    // Значение, которое сгенерировала система (код, номер), — из записи, созданной ранее в сценарии.
+                    if (!vars.TryGetValue(spec!["var"]!.ToString(), out var rid)) break;
+                    var (admin, _) = await ClientAsync(Script["adminLogin"]?.ToString() ?? "", ct);
+                    var record = await SendAsync(admin, "GET", spec["path"]!.ToString().Replace("{" + spec["var"]!.ToString() + "}", rid), new JsonObject(), ct);
+                    if (record is JsonObject rec && rec[spec["field"]!.ToString()] is { } value) args[key] = value.DeepClone();
+                    break;
+                }
+                case "zonepoint":
+                {
+                    // Точка внутри зоны геослоя (или далеко за её пределами для шага-отказа).
+                    using var scope = scopes.CreateScope();
+                    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    await db.Database.OpenConnectionAsync(ct);
+                    try
+                    {
+                        await using var cmd = new Npgsql.NpgsqlCommand(spec!["sql"]!.ToString(), (Npgsql.NpgsqlConnection)db.Database.GetDbConnection());
+                        await using var reader = await cmd.ExecuteReaderAsync(ct);
+                        if (await reader.ReadAsync(ct) && !reader.IsDBNull(0))
+                        {
+                            var (lat, lon) = (reader.GetDouble(0), reader.GetDouble(1));
+                            if (spec["outside"]?.GetValue<bool>() == true) (lat, lon) = (lat + 0.35, lon + 0.5);
+                            args[key] = spec["shape"]?.ToString() == "latlon"
+                                ? new JsonObject { ["lat"] = lat, ["lon"] = lon }
+                                : new JsonObject { ["type"] = "Point", ["coordinates"] = new JsonArray(lon, lat) };
+                        }
+                    }
+                    finally
+                    {
+                        await db.Database.CloseConnectionAsync();
+                    }
+                    break;
+                }
                 case "geo":
                 {
                     if (!vars.TryGetValue(spec!["var"]!.ToString(), out var id) || !Guid.TryParse(id, out var gid)) break;
@@ -344,9 +482,10 @@ public sealed class DemoScenarioRunner(IServiceScopeFactory scopes, IHttpClientF
         }
     }
 
-    /// <summary>Значение параметра пути: первая запись сущности, принадлежащая пользователю (или любая).</summary>
-    private async Task<Guid?> ResolveParamAsync(string name, Guid userId, CancellationToken ct)
+    /// <summary>Значение параметра пути: запись сущности, принадлежащая пользователю (или любая); nth — порядковый номер.</summary>
+    private async Task<Guid?> ResolveParamAsync(string name, Guid userId, CancellationToken ct, int nth = 0)
     {
+        var now = clock.GetUtcNow();
         using var scope = scopes.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         switch (name)
@@ -355,11 +494,15 @@ public sealed class DemoScenarioRunner(IServiceScopeFactory scopes, IHttpClientF
 {% for alias in id_aliases(e) %}
             case "{{alias}}":
 {% endfor %}
-{% if e.owner_field %}
-                return await db.{{plural(e.name)}}.AsNoTracking().Where(x => x.{{pascal(e.owner_field)}} == userId).OrderBy(x => x.CreatedAt).Select(x => (Guid?)x.Id).FirstOrDefaultAsync(ct)
-                    ?? await db.{{plural(e.name)}}.AsNoTracking().OrderBy(x => x.CreatedAt).Select(x => (Guid?)x.Id).FirstOrDefaultAsync(ct);
+{# Запись человека (сотрудник, врач) — по его учётной записи: «сотрудник подаёт заявку» от своего имени. #}
+{% set owners = owner_fields(e) or (e.fields | selectattr("name", "equalto", "userId") | selectattr("ref", "equalto", "User") | map(attribute="name") | list) %}
+{% set up = upcoming_field(e) if upcoming_field is defined else none %}
+{% set order %}{% if up %}OrderBy(x => x.{{pascal(up.name)}} < now ? 1 : 0).ThenBy(x => x.CreatedAt){% else %}OrderBy(x => x.CreatedAt){% endif %}.ThenBy(x => x.Id){% endset %}
+{% if owners %}
+                return await db.{{plural(e.name)}}.AsNoTracking().Where(x => {% for f in owners %}x.{{pascal(f)}} == userId{% if not loop.last %} || {% endif %}{% endfor %}).{{order}}.Skip(nth).Select(x => (Guid?)x.Id).FirstOrDefaultAsync(ct)
+                    ?? await db.{{plural(e.name)}}.AsNoTracking().{{order}}.Skip(nth).Select(x => (Guid?)x.Id).FirstOrDefaultAsync(ct);
 {% else %}
-                return await db.{{plural(e.name)}}.AsNoTracking().OrderBy(x => x.CreatedAt).Select(x => (Guid?)x.Id).FirstOrDefaultAsync(ct);
+                return await db.{{plural(e.name)}}.AsNoTracking().{{order}}.Skip(nth).Select(x => (Guid?)x.Id).FirstOrDefaultAsync(ct);
 {% endif %}
 {% endfor %}
             default:

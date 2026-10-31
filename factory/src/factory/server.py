@@ -50,7 +50,7 @@ def presets() -> list[dict]:
 @app.post("/api/runs")
 async def start_run(requirements: str = Form(...), preset: str = Form(""), answer_timeout: int = Form(90),
                     files: list[UploadFile] = File(default=[])) -> dict:
-    run_id = time.strftime("%Y%m%d-%H%M%S")
+    run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(2).hex()
     case_dir = INPUTS / run_id
     data_dir = case_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -144,7 +144,9 @@ def _project(run_id: str) -> Path:
 @app.get("/api/runs/{run_id}/docs")
 def list_docs(run_id: str) -> list[str]:
     project = _project(run_id)
-    files = ["README.md"] + sorted(str(p.relative_to(project)) for p in (project / "docs").glob("*.md"))
+    docs = project / "docs"
+    files = ["README.md"] + sorted(str(p.relative_to(project)) for p in docs.rglob("*.md")) + [
+        str(p.relative_to(project)) for p in (docs / "asyncapi.yaml", docs / "api" / "openapi.json") if p.exists()]
     return [f for f in files if (project / f).exists()]
 
 

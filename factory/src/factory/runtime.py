@@ -86,6 +86,21 @@ async def redeploy_clean(project: Path, slug: str) -> tuple[bool, str, dict[str,
     return await deploy(project, slug)
 
 
+async def redeploy_backend(project: Path, slug: str) -> tuple[bool, str, dict[str, int]]:
+    """Between demo rounds: fresh schema and rebuilt backend; Kafka, Postgres and the web container keep running."""
+    ports = write_env(project, slug)
+    await run(["docker", "compose", "stop", "backend"], cwd=project, timeout=120)
+    code, out = await run(["docker", "compose", "exec", "-T", "db", "psql", "-U", "app", "-d", "app", "-v", "ON_ERROR_STOP=1", "-c",
+                           "DROP SCHEMA public CASCADE; CREATE SCHEMA public; CREATE EXTENSION IF NOT EXISTS postgis;"],
+                          cwd=project, timeout=120)
+    if code != 0:
+        return await redeploy_clean(project, slug)
+    code, out = await run(["docker", "compose", "up", "-d", "--build", "--wait", "backend"], cwd=project, timeout=1800)
+    if code != 0:
+        return await redeploy_clean(project, slug)
+    return True, out[-4000:], ports
+
+
 async def logs_since(project: Path, since: float) -> str:
     _, out = await run(["docker", "compose", "logs", "backend", "--no-color", "--since", str(int(since))], cwd=project, timeout=60)
     return out
@@ -140,7 +155,10 @@ def failed_targets(spec: AppSpec, status: dict) -> dict[str, list[str]]:
             emitters.setdefault(ev, job.name)
     targets: dict[str, list[str]] = {}
     last_op_ok: dict[str, bool] = {}
-    flow = "Ход демо-сценария: " + "; ".join(f"{st['title']} — {st.get('status')}" for st in status.get("steps", []))
+    first_failure_seen = False
+    flow = "Ход демо-сценария: " + "; ".join(
+        f"{st['title']} — {st.get('status')}" + (f" ({st.get('detail')})" if st.get("action") == "advance_time" and st.get("detail") else "")
+        for st in status.get("steps", []))
     for st in status.get("steps", []):
         step = by_id.get(st["id"])
         if not step:
@@ -154,8 +172,16 @@ def failed_targets(spec: AppSpec, status: dict) -> dict[str, list[str]]:
             continue
         if step.action in ("operation", "route") and step.operation:
             # Only real HTTP failures are logic bugs; missing data is not.
-            if re.search(r": (400|422|5\d\d) ", detail) and not detail.startswith("Не найдено"):
+            if re.search(r": 5\d\d ", detail):
+                # 500 — всегда ошибка кода, а не каскад: чиним независимо от первопричины.
                 targets.setdefault(step.operation, []).append(f"Шаг «{step.title}»: {detail[:700]}")
+                continue
+            if first_failure_seen:
+                continue
+            if re.search(r": (400|403|404|409|422) ", detail) and not detail.startswith("Не найдено"):
+                targets.setdefault(step.operation, []).append(f"Шаг «{step.title}»: {detail[:700]}")
+                # Следующие шаги обычно падают каскадом от этого — сначала чиним первопричину.
+                first_failure_seen = True
         elif step.action == "expect":
             ev = step.args.get("event", "")
             owner = emitters.get(ev)

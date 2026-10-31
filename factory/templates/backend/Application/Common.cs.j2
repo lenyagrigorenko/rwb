@@ -65,3 +65,78 @@ public static class AutoNumber
         return value.Length <= maxLength ? value : value[^maxLength..];
     }
 }
+
+/// <summary>Счётчики для /metrics в формате Prometheus: HTTP-запросы, бизнес-операции, доменные события.</summary>
+public static class AppMetrics
+{
+    private static readonly double[] Buckets = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10];
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Name, string Labels), long> Counters = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Name, string Labels), Histogram> Histograms = new();
+
+    public static string Label(string name, string value) => $"{name}=\"{value.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"";
+
+    public static void Inc(string name, string labels = "", long by = 1) => Counters.AddOrUpdate((name, labels), by, (_, v) => v + by);
+
+    public static void Observe(string name, string labels, double seconds) =>
+        Histograms.GetOrAdd((name, labels), _ => new Histogram()).Observe(seconds);
+
+    /// <summary>Текст для /metrics; gauges — дополнительные значения (имя → значение), вычисленные при запросе.</summary>
+    public static string Render(IEnumerable<(string Name, string Help, string Type, string Labels, double Value)> gauges)
+    {
+        var sb = new System.Text.StringBuilder();
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        foreach (var group in Counters.GroupBy(kv => kv.Key.Name).OrderBy(g => g.Key))
+        {
+            sb.Append("# TYPE ").Append(group.Key).Append(" counter\n");
+            foreach (var kv in group) sb.Append(group.Key).Append('{').Append(kv.Key.Labels).Append("} ").Append(kv.Value.ToString(inv)).Append('\n');
+        }
+        foreach (var group in Histograms.GroupBy(kv => kv.Key.Name).OrderBy(g => g.Key))
+        {
+            sb.Append("# TYPE ").Append(group.Key).Append(" histogram\n");
+            foreach (var kv in group)
+            {
+                var (counts, sum, count) = kv.Value.Snapshot();
+                var sep = kv.Key.Labels.Length > 0 ? "," : "";
+                long cumulative = 0;
+                for (var i = 0; i < Buckets.Length; i++)
+                {
+                    cumulative += counts[i];
+                    sb.Append(group.Key).Append("_bucket{").Append(kv.Key.Labels).Append(sep).Append("le=\"").Append(Buckets[i].ToString(inv)).Append("\"} ").Append(cumulative.ToString(inv)).Append('\n');
+                }
+                sb.Append(group.Key).Append("_bucket{").Append(kv.Key.Labels).Append(sep).Append("le=\"+Inf\"} ").Append(count.ToString(inv)).Append('\n');
+                sb.Append(group.Key).Append("_sum{").Append(kv.Key.Labels).Append("} ").Append(sum.ToString(inv)).Append('\n');
+                sb.Append(group.Key).Append("_count{").Append(kv.Key.Labels).Append("} ").Append(count.ToString(inv)).Append('\n');
+            }
+        }
+        foreach (var g in gauges)
+        {
+            sb.Append("# HELP ").Append(g.Name).Append(' ').Append(g.Help).Append('\n');
+            sb.Append("# TYPE ").Append(g.Name).Append(' ').Append(g.Type).Append('\n');
+            sb.Append(g.Name).Append(g.Labels.Length > 0 ? "{" + g.Labels + "}" : "").Append(' ').Append(g.Value.ToString(inv)).Append('\n');
+        }
+        return sb.ToString();
+    }
+
+    private sealed class Histogram
+    {
+        private readonly long[] _counts = new long[Buckets.Length];
+        private double _sum;
+        private long _count;
+
+        public void Observe(double value)
+        {
+            lock (this)
+            {
+                var i = Array.FindIndex(Buckets, b => value <= b);
+                if (i >= 0) _counts[i]++;
+                _sum += value;
+                _count++;
+            }
+        }
+
+        public (long[] Counts, double Sum, long Count) Snapshot()
+        {
+            lock (this) return ((long[])_counts.Clone(), _sum, _count);
+        }
+    }
+}

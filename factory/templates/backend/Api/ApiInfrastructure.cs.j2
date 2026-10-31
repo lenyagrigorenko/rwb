@@ -79,11 +79,18 @@ public sealed class AppExceptionHandler(IProblemDetailsService problems, ILogger
             case DbUpdateException { InnerException: PostgresException { SqlState: "23514" } }:
                 (status, code, title) = (400, "validation", "Значение не прошло проверку ограничений");
                 break;
-            case DbUpdateException { InnerException: PostgresException { SqlState: "22001" } }:
-                (status, code, title) = (400, "validation", "Значение превышает допустимую длину поля");
+            case DbUpdateException { InnerException: PostgresException { SqlState: "22001" } } du:
+                // Какое поле длиннее ограничения — по метаданным модели (сообщение СУБД имени столбца не содержит).
+                errors = du.Entries.SelectMany(e => e.Properties
+                        .Where(pr => pr.CurrentValue is string sv && pr.Metadata.GetMaxLength() is int max && sv.Length > max)
+                        .Select(pr => (Key: $"{e.Metadata.ClrType.Name}.{pr.Metadata.Name}",
+                                       Text: $"не более {pr.Metadata.GetMaxLength()} символов, передано {((string)pr.CurrentValue!).Length}")))
+                    .GroupBy(x => x.Key).ToDictionary(g => g.Key, g => g.Select(x => x.Text).ToArray());
+                (status, code, title) = (400, "validation", "Значение превышает допустимую длину поля"
+                    + (errors.Count > 0 ? ": " + string.Join(", ", errors.Keys) : ""));
                 break;
-            case DbUpdateException { InnerException: PostgresException { SqlState: "23502" } }:
-                (status, code, title) = (400, "validation", "Не заполнено обязательное поле");
+            case DbUpdateException { InnerException: PostgresException { SqlState: "23502" } pg }:
+                (status, code, title) = (400, "validation", "Не заполнено обязательное поле" + (pg.ColumnName is { } col ? $" «{col}» ({pg.TableName})" : ""));
                 break;
             case BadHttpRequestException b:
                 (status, code, title) = (400, "bad_request", b.Message);
@@ -95,8 +102,12 @@ public sealed class AppExceptionHandler(IProblemDetailsService problems, ILogger
                 (status, code, title) = (500, "internal_error", "Внутренняя ошибка сервера");
                 break;
         }
-        if (status >= 500) log.LogError(ex, "Request failed with {Status}", status);
-        else log.LogInformation("Request rejected: {Code} {Message}", code, ex.Message);
+        // Где в прикладном коде возникла ошибка (файл и строка обработчика) — для разбора и автоисправления по журналу.
+        var frame = new System.Diagnostics.StackTrace(ex, true).GetFrames()
+            .FirstOrDefault(f => f.GetFileLineNumber() > 0 && f.GetMethod()?.DeclaringType?.Namespace?.StartsWith("{{N}}.Application", StringComparison.Ordinal) == true);
+        var at = frame is null ? "" : $" ({Path.GetFileName(frame.GetFileName())}:{frame.GetFileLineNumber()})";
+        if (status >= 500) log.LogError(ex, "Request failed with {Status}{At}", status, at);
+        else log.LogInformation("Request rejected: {Code} {Message}{At}", code, ex.Message, at);
 
         ctx.Response.StatusCode = status;
         var problem = new ProblemDetails
@@ -114,6 +125,19 @@ public sealed class AppExceptionHandler(IProblemDetailsService problems, ILogger
 }
 
 /// <summary>Корреляционный идентификатор запроса в логах и заголовке X-Correlation-Id.</summary>
+/// <summary>Страховка единицы работы: изменения, добавленные после SaveChangesAsync (событие, опубликованное в конце
+/// операции), сохраняются по её успешному завершению, а не теряются.</summary>
+public sealed class SaveChangesFilter(AppDbContext db) : Microsoft.AspNetCore.Mvc.Filters.IAsyncActionFilter
+{
+    public async Task OnActionExecutionAsync(Microsoft.AspNetCore.Mvc.Filters.ActionExecutingContext context,
+        Microsoft.AspNetCore.Mvc.Filters.ActionExecutionDelegate next)
+    {
+        var executed = await next();
+        if (executed.Exception is null && db.ChangeTracker.HasChanges())
+            await db.SaveChangesAsync(context.HttpContext.RequestAborted);
+    }
+}
+
 public sealed class CorrelationIdMiddleware(RequestDelegate next, ILogger<CorrelationIdMiddleware> log)
 {
     public async Task InvokeAsync(HttpContext ctx)

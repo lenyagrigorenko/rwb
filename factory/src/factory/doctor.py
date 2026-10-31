@@ -12,9 +12,11 @@ from pydantic import BaseModel
 from .builder import ANDROID_BUILDER, SDK, run
 from .llm import LLM
 from .recorder import IMAGE as PLAYWRIGHT_IMAGE
+from .diagrams import IMAGE as PLANTUML
+from .security import GITLEAKS
 
 IMAGES = [SDK, "mcr.microsoft.com/dotnet/aspnet:10.0", "postgis/postgis:17-3.5", "node:22-alpine",
-          "nginx:1.27-alpine", "apache/kafka:3.9.1", ANDROID_BUILDER, PLAYWRIGHT_IMAGE]
+          "nginx:1.27-alpine", "apache/kafka:3.9.1", ANDROID_BUILDER, PLAYWRIGHT_IMAGE, GITLEAKS, PLANTUML]
 
 
 class Probe(BaseModel):
@@ -88,6 +90,12 @@ async def check_llm() -> None:
     t0 = time.perf_counter()
     await asyncio.gather(*(llm.text(f"doctor.parallel{i}", "Отвечай кратко.", f"Назови число {i}", max_tokens=20) for i in range(4)))
     line(True, f"4 параллельных запроса за {time.perf_counter() - t0:.1f} с")
+    lim = llm.limiter
+    line(None if not lim.tpm else True,
+         f"лимиты ключа: {lim.tpm or 'не заданы'} ток/мин, параллельных запросов {lim.parallel} "
+         "(LLM_TPM / LLM_CONCURRENCY; уточняются по ответам 429 и заголовкам x-ratelimit-*)")
+    rejected = sum(1 for c in llm.telemetry.calls if not c.ok and c.error.startswith("429"))
+    line(rejected == 0 or None, f"отказов по лимитам (429): {rejected}")
     print(f"   итого токенов на проверку: {sum(c.prompt_tokens + c.completion_tokens for c in llm.telemetry.calls)}")
 
 

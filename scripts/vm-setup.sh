@@ -51,7 +51,7 @@ fi
 echo "== Образы стека"
 for img in mcr.microsoft.com/dotnet/sdk:10.0 mcr.microsoft.com/dotnet/aspnet:10.0 postgis/postgis:17-3.5 \
            node:22-alpine nginx:1.27-alpine apache/kafka:3.9.1 eclipse-temurin:17-jdk \
-           mcr.microsoft.com/playwright:v1.64.1-noble; do
+           mcr.microsoft.com/playwright:v1.64.1-noble zricethezav/gitleaks:v8.21.2 plantuml/plantuml:1.2024.8; do
   docker pull -q "$img"
 done
 docker volume create nuget-cache >/dev/null

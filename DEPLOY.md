@@ -92,7 +92,8 @@ LLM_MODEL=qwen3.8-27b
 LLM_API_KEY=ВАШ_КЛЮЧ
 LLM_PROVIDER=
 LLM_THINKING=auto
-LLM_CONCURRENCY=4
+LLM_CONCURRENCY=3
+LLM_TPM=30000
 LLM_TIMEOUT=900
 EOF
 chmod 600 .env
@@ -105,7 +106,9 @@ chmod 600 .env
 | `LLM_PROVIDER` | пусто (используется только с OpenRouter) |
 | `LLM_THINKING` | `auto` — выключать «размышления» Qwen3 параметром шаблона; если сервер его не принимает, клиент сам переключится на `soft` (`/no_think` в запросе). Можно задать `soft` сразу |
 | `LLM_STRUCTURED` | по умолчанию `auto`; `off` — не просить у сервера JSON-схему (схема в промпте + проверка) |
-| `LLM_CONCURRENCY` | число параллельных запросов (4 — безопасно для общего сервера) |
+| `LLM_CONCURRENCY` | число параллельных запросов. У ключа организаторов лимит **3** (ответ 429 «max_parallel_requests») |
+| `LLM_TPM` | лимит токенов в минуту на ключ. У ключа организаторов **30000** (ответ 429 «Limit type: tokens»). Клиент сам планирует запросы под лимит (запрос резервирует промпт + max_tokens) и не получает отказов. Если у демонстрационного ключа другие лимиты, клиент узнает их из первого ответа 429 и подстроится; ожидание по 429 не тратит попытки генерации |
+| `LLM_RATE_WAIT` | сколько секунд суммарно можно ждать лимитов в одном вызове (по умолчанию 900) |
 
 Вернуть OpenRouter (для отладки на Mac): `LLM_BASE_URL=https://openrouter.ai/api/v1`, `LLM_MODEL=qwen/qwen3.8-27b`,
 `LLM_PROVIDER=cerebras/fp16`, ключ OpenRouter.
@@ -118,8 +121,17 @@ cd ~/rwb
 ```
 
 Скрипт: ставит `uv` и зависимости Python, скачивает образы стека (.NET SDK/ASP.NET, PostGIS, Node, nginx, Kafka,
-Playwright), собирает образ сборщика Android, прогревает кэши NuGet / npm / Gradle на эталонном проекте, проверяет
-модель и запускает веб-интерфейс на `:8000`. Повторный запуск безопасен.
+Playwright, Gitleaks — проверка секретов, PlantUML — рендер диаграмм ТЗ), собирает образ сборщика Android, прогревает
+кэши NuGet / npm / Gradle на эталонном проекте, проверяет модель и запускает веб-интерфейс на `:8000`. Повторный запуск
+безопасен.
+
+Обновление после `git pull` (без полного прогрева): докачать новые образы и перезапустить интерфейс:
+
+```bash
+cd ~/rwb && git pull
+docker pull -q zricethezav/gitleaks:v8.21.2 && docker pull -q plantuml/plantuml:1.2024.8
+./scripts/factory-server.sh restart
+```
 
 ## 5. Проверка готовности
 

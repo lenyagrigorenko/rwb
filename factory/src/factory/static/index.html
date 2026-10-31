@@ -4,106 +4,234 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Фабрика приложений</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
 <style>
   :root {
-    --bg: #0b1220; --panel: #121b2e; --panel2: #18233a; --line: #24324f; --text: #e6ecf7; --muted: #8fa0bf;
-    --accent: #4f8cff; --ok: #34c38f; --run: #f5b84b; --fail: #ff6b6b; --skip: #6c7a96;
+    --bg: #faf9f5; --surface: #ffffff; --sunk: #f3f1ea; --line: #e6e3d8; --line-strong: #d6d2c4;
+    --text: #1f1e1d; --muted: #75736b; --faint: #a19e93;
+    --accent: #c96442; --accent-soft: #f6e7df; --accent-ink: #9c4528;
+    --ok: #5e7f4f; --ok-soft: #e8efe1; --run: #b7791f; --run-soft: #f8eedb; --fail: #b2453b; --fail-soft: #f6e1de;
+    --serif: "Source Serif 4", "Tiempos Text", Georgia, serif;
+    --sans: "Inter", -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+    --radius: 14px; --shadow: 0 1px 2px rgba(31, 30, 29, .04), 0 6px 24px rgba(31, 30, 29, .05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1f1e1c; --surface: #2a2926; --sunk: #242320; --line: #3a3935; --line-strong: #4a4843;
+      --text: #f2efe6; --muted: #aaa69a; --faint: #7c796f;
+      --accent: #db7c5a; --accent-soft: #3d2b23; --accent-ink: #f0a586;
+      --ok: #8fb07b; --ok-soft: #26301f; --run: #d9a441; --run-soft: #352b17; --fail: #e07a6e; --fail-soft: #3a2320;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 6px 24px rgba(0, 0, 0, .25);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1f1e1c; --surface: #2a2926; --sunk: #242320; --line: #3a3935; --line-strong: #4a4843;
+    --text: #f2efe6; --muted: #aaa69a; --faint: #7c796f;
+    --accent: #db7c5a; --accent-soft: #3d2b23; --accent-ink: #f0a586;
+    --ok: #8fb07b; --ok-soft: #26301f; --run: #d9a441; --run-soft: #352b17; --fail: #e07a6e; --fail-soft: #3a2320;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 6px 24px rgba(0, 0, 0, .25);
   }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 14px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
-  header { display: flex; align-items: center; gap: 16px; padding: 14px 24px; border-bottom: 1px solid var(--line); }
-  header h1 { font-size: 18px; margin: 0; }
-  header .sub { color: var(--muted); }
-  .grid { display: grid; grid-template-columns: 360px 1fr 340px; gap: 16px; padding: 16px 24px; }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
-  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; }
-  textarea { width: 100%; min-height: 360px; background: var(--panel2); color: var(--text); border: 1px solid var(--line);
-             border-radius: 10px; padding: 10px; font: 12.5px/1.45 ui-monospace, Menlo, monospace; resize: vertical; }
-  select, input[type=file], input[type=text] { width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--line);
-             border-radius: 8px; padding: 8px; margin-bottom: 10px; }
-  button { background: var(--accent); color: white; border: 0; border-radius: 10px; padding: 10px 16px; font-weight: 600; cursor: pointer; }
-  button.secondary { background: var(--panel2); border: 1px solid var(--line); color: var(--text); }
-  button:disabled { opacity: .5; cursor: default; }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .office { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
-  .agent { background: var(--panel2); border: 1px solid var(--line); border-radius: 12px; padding: 12px; position: relative; min-height: 112px; transition: border-color .3s, transform .3s; }
-  .agent .who { display: flex; align-items: center; gap: 10px; }
-  .avatar { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; font-size: 20px; background: #0e1628; border: 2px solid var(--line); }
-  .agent .role { font-weight: 600; }
-  .agent .task { color: var(--muted); font-size: 12.5px; }
-  .agent .detail { margin-top: 8px; font-size: 12.5px; color: var(--text); opacity: .9; }
-  .agent .time { position: absolute; top: 10px; right: 12px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-  .agent.running { border-color: var(--run); transform: translateY(-2px); box-shadow: 0 6px 24px rgba(245,184,75,.15); }
-  .agent.running .avatar { border-color: var(--run); animation: pulse 1.2s infinite; }
-  .agent.done { border-color: rgba(52,195,143,.6); }
-  .agent.done .avatar { border-color: var(--ok); }
-  .agent.failed { border-color: var(--fail); }
-  .agent.skipped { opacity: .55; }
-  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(245,184,75,.5); } 50% { box-shadow: 0 0 0 8px rgba(245,184,75,0); } }
-  .flow { height: 4px; background: var(--line); border-radius: 4px; margin: 14px 0 4px; overflow: hidden; }
-  .flow > div { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--ok)); transition: width .5s; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body { font: 14px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+  a { color: var(--accent-ink); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font: 12.5px var(--mono); background: var(--sunk); border: 1px solid var(--line); border-radius: 6px; padding: 1px 5px; }
+
+  header { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 14px; padding: 14px 28px;
+           background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand svg { width: 26px; height: 26px; color: var(--accent); }
+  .brand h1 { font: 600 20px/1 var(--serif); letter-spacing: -.01em; margin: 0; }
+  .tagline { color: var(--muted); font-size: 13px; }
+  .spacer { flex: 1; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 12.5px;
+          font-weight: 500; background: var(--sunk); color: var(--muted); border: 1px solid var(--line); }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .pill.running { color: var(--run); background: var(--run-soft); border-color: transparent; }
+  .pill.running .dot { animation: blink 1.2s infinite; }
+  .pill.done { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+  .pill.failed { color: var(--fail); background: var(--fail-soft); border-color: transparent; }
+  .icon-btn { background: transparent; border: 1px solid var(--line); color: var(--muted); border-radius: 10px; width: 34px; height: 34px;
+              display: grid; place-items: center; cursor: pointer; }
+  .icon-btn:hover { color: var(--text); border-color: var(--line-strong); }
+
+  main { display: grid; grid-template-columns: minmax(300px, 380px) minmax(0, 1fr) minmax(280px, 340px); gap: 20px; padding: 24px 28px 48px;
+         max-width: 1680px; margin: 0 auto; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 18px; }
+  .card + .card { margin-top: 16px; }
+  .card h2 { font: 600 17px/1.3 var(--serif); margin: 0 0 4px; letter-spacing: -.005em; }
+  .card .hint { color: var(--muted); font-size: 12.5px; margin: 0 0 14px; }
+  label.field { display: block; font-size: 12px; font-weight: 500; color: var(--muted); margin: 12px 0 6px; }
+  select, input[type=text], textarea { width: 100%; background: var(--sunk); color: var(--text); border: 1px solid var(--line);
+         border-radius: 10px; padding: 9px 11px; font: inherit; outline: none; transition: border-color .15s, box-shadow .15s; }
+  select:focus, input[type=text]:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  textarea { min-height: 340px; resize: vertical; font: 12.5px/1.55 var(--mono); }
+  .drop { display: flex; align-items: center; gap: 10px; border: 1px dashed var(--line-strong); border-radius: 10px; padding: 10px 12px;
+          color: var(--muted); font-size: 12.5px; cursor: pointer; background: var(--sunk); }
+  .drop input { display: none; }
+  .actions { display: flex; align-items: center; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; border: 1px solid transparent; border-radius: 10px; padding: 10px 16px;
+         font: 500 14px var(--sans); cursor: pointer; transition: background .15s, transform .05s; }
+  .btn:active { transform: translateY(1px); }
+  .btn.primary { background: var(--accent); color: #fff; }
+  .btn.primary:hover { background: var(--accent-ink); }
+  .btn.ghost { background: var(--surface); color: var(--text); border-color: var(--line); }
+  .btn.ghost:hover { border-color: var(--line-strong); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .inline-num { width: 54px !important; display: inline-block; padding: 5px 8px !important; text-align: center; }
+  .muted { color: var(--muted); }
+
+  .runs { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow: auto; }
+  .runs li { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+  .runs li:hover, .runs li.active { background: var(--sunk); }
+  .runs .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .runs .id { color: var(--faint); font: 11.5px var(--mono); }
+  .sdot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+  .sdot.done { background: var(--ok); } .sdot.failed { background: var(--fail); } .sdot.running { background: var(--run); animation: blink 1.2s infinite; }
+
+  .pipeline-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+  .pipeline-head h2 { margin: 0; }
+  .progress { height: 4px; background: var(--sunk); border-radius: 4px; overflow: hidden; margin: 2px 0 18px; }
+  .progress > div { height: 100%; width: 0; background: var(--accent); transition: width .5s ease; }
+  .stages { position: relative; display: grid; gap: 2px; }
+  .stage { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 12px; align-items: start; padding: 10px 10px 10px 4px;
+           border-radius: 12px; transition: background .2s; }
+  .stage.running { background: var(--run-soft); }
+  .stage .mark { position: relative; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center;
+                 background: var(--sunk); border: 1px solid var(--line); color: var(--muted); }
+  .stage .mark svg { width: 15px; height: 15px; }
+  .stage.done .mark { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+  .stage.running .mark { background: var(--surface); color: var(--run); border-color: var(--run); animation: ring 1.6s infinite; }
+  .stage.failed .mark { background: var(--fail-soft); color: var(--fail); border-color: transparent; }
+  .stage.skipped { opacity: .5; }
+  .stage .who { font-weight: 600; font-size: 13.5px; }
+  .stage .what { color: var(--muted); font-size: 12.5px; }
+  .stage .detail { font-size: 12.5px; margin-top: 3px; color: var(--text); overflow-wrap: anywhere; }
+  .stage .time { color: var(--faint); font: 12px var(--mono); padding-top: 6px; }
+
+  .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 4px; }
+  .tile { background: var(--sunk); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+  .tile .k { color: var(--muted); font-size: 12px; }
+  .tile .v { font: 600 15px var(--sans); margin-top: 2px; }
+  .tile .v.ok { color: var(--ok); } .tile .v.bad { color: var(--fail); }
+  .links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; align-items: center; }
+  .qr { display: flex; gap: 12px; align-items: center; margin-top: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; }
+  .qr img { width: 96px; height: 96px; background: #fff; border-radius: 8px; padding: 4px; }
+
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 18px 0 14px; }
+  .tab { background: none; border: 0; padding: 8px 12px; font: 500 13px var(--sans); color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .docs { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; }
+  .doclist { display: flex; flex-direction: column; gap: 2px; max-height: 640px; overflow: auto; }
+  .doclist button { text-align: left; background: none; border: 0; padding: 6px 10px; border-radius: 8px; font: 13px var(--sans); color: var(--text); cursor: pointer; }
+  .doclist button:hover { background: var(--sunk); }
+  .doclist button.active { background: var(--accent-soft); color: var(--accent-ink); }
+  .doclist .group { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); margin: 10px 10px 4px; }
+  .doc { max-height: 640px; overflow: auto; padding: 4px 6px 4px 2px; font-size: 13.5px; }
+  .doc h1, .doc h2, .doc h3, .doc h4, .doc h5 { font-family: var(--serif); font-weight: 600; letter-spacing: -.005em; margin: 18px 0 8px; }
+  .doc h2 { font-size: 22px; } .doc h3 { font-size: 18px; } .doc h4 { font-size: 15.5px; } .doc h5 { font-size: 14px; }
+  .doc p { margin: 6px 0; }
+  .doc ul { margin: 6px 0; padding-left: 20px; }
+  .doc table { border-collapse: collapse; margin: 10px 0; font-size: 12.5px; width: 100%; display: block; overflow: auto; }
+  .doc th { background: var(--sunk); font-weight: 600; text-align: left; }
+  .doc td, .doc th { border: 1px solid var(--line); padding: 6px 8px; vertical-align: top; }
+  .doc pre { background: var(--sunk); border: 1px solid var(--line); padding: 10px 12px; border-radius: 10px; overflow: auto; font: 12px/1.5 var(--mono); }
+  .doc img.diagram { max-width: 100%; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 8px; }
+  .doc details { margin: 8px 0 2px; }
+  .doc details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+  .doc blockquote { margin: 8px 0; padding: 6px 12px; border-left: 3px solid var(--accent); color: var(--muted); background: var(--sunk); border-radius: 0 8px 8px 0; }
+  .empty { color: var(--muted); padding: 28px 8px; text-align: center; font-size: 13px; }
+
   .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .metric { background: var(--panel2); border-radius: 10px; padding: 10px; }
-  .metric .v { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .metric { background: var(--sunk); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+  .metric .v { font: 600 22px/1.2 var(--serif); font-variant-numeric: tabular-nums; }
   .metric .k { color: var(--muted); font-size: 12px; }
-  .log { max-height: 220px; overflow: auto; font: 12px/1.5 ui-monospace, Menlo, monospace; color: var(--muted); }
-  .log b { color: var(--text); font-weight: 500; }
-  .question { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-bottom: 10px; }
-  .question .q { font-weight: 600; margin-bottom: 4px; }
-  .question .def { color: var(--muted); font-size: 12.5px; margin: 4px 0 8px; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; background: var(--line); }
-  .badge.high { background: rgba(255,107,107,.2); color: #ffb3b3; }
-  .badge.medium { background: rgba(245,184,75,.2); color: #ffd99a; }
-  .results a { color: #9cc0ff; }
-  .docs { display: grid; grid-template-columns: 220px 1fr; gap: 12px; margin-top: 12px; }
-  .doclist button { display: block; width: 100%; text-align: left; margin-bottom: 4px; padding: 6px 10px; font-weight: 400; }
-  .doc { background: #0e1628; border-radius: 10px; padding: 14px; max-height: 520px; overflow: auto; font-size: 13px; }
-  .doc table { border-collapse: collapse; margin: 8px 0; font-size: 12px; }
-  .doc td, .doc th { border: 1px solid var(--line); padding: 4px 6px; vertical-align: top; }
-  .doc pre { background: #0b1220; padding: 8px; border-radius: 8px; overflow: auto; }
-  .status { font-weight: 600; }
-  .status.done { color: var(--ok); } .status.failed { color: var(--fail); } .status.running { color: var(--run); }
-  .hidden { display: none; }
-  @media (max-width: 1200px) { .grid { grid-template-columns: 1fr; } }
+  .question { border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 10px; background: var(--sunk); }
+  .question .q { font-weight: 600; margin: 6px 0 4px; }
+  .question .def { color: var(--muted); font-size: 12.5px; margin-bottom: 8px; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; background: var(--line); color: var(--muted); }
+  .badge.high { background: var(--fail-soft); color: var(--fail); } .badge.medium { background: var(--run-soft); color: var(--run); }
+  .log { max-height: 300px; overflow: auto; font: 12px/1.6 var(--mono); color: var(--muted); }
+  .log div { padding: 1px 0; }
+  .log b { color: var(--faint); font-weight: 400; margin-right: 6px; }
+  .hidden { display: none !important; }
+  @keyframes blink { 50% { opacity: .35; } }
+  @keyframes ring { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--run) 45%, transparent); } 70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+  @media (max-width: 1280px) { main { grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); } aside.right { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; } aside.right .card + .card { margin-top: 0; } }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; padding: 16px; } header { padding: 12px 16px; } .tagline { display: none; } .docs { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
 <header>
-  <h1>🏭 Фабрика приложений</h1>
-  <span class="sub">бизнес-требования → анализ → архитектура → код → тесты → документация → запуск · Qwen3.8-27B</span>
-  <span style="flex:1"></span>
-  <span id="runStatus" class="status"></span>
+  <div class="brand">
+    <svg viewBox="0 0 32 32" fill="currentColor" aria-hidden="true"><path d="M16 2.5l2.3 9.1 8.2-4.6-4.6 8.2 9.1 2.3-9.1 2.3 4.6 8.2-8.2-4.6L16 29.5l-2.3-9.1-8.2 4.6 4.6-8.2L1 16.5l9.1-2.3-4.6-8.2 8.2 4.6z"/></svg>
+    <h1>Фабрика приложений</h1>
+  </div>
+  <span class="tagline">бизнес-требования → анализ → архитектура → код → тесты → документация → запуск</span>
+  <span class="spacer"></span>
+  <span id="runStatus" class="pill hidden"><span class="dot"></span><span id="runStatusText"></span></span>
+  <button class="icon-btn" id="theme" title="Тема оформления" aria-label="Тема оформления">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+  </button>
 </header>
-<div class="grid">
-  <section class="panel">
-    <h2>Бизнес-требования</h2>
-    <select id="preset"><option value="">— свои требования —</option></select>
-    <textarea id="req" placeholder="Вставьте формализованные бизнес-требования…"></textarea>
-    <div style="margin:10px 0 4px;color:var(--muted);font-size:12px">Данные (JSON/CSV), необязательно</div>
-    <input type="file" id="files" multiple />
-    <div class="row">
-      <button id="start">▶ Запустить конвейер</button>
-      <span style="color:var(--muted);font-size:12px">ожидание ответов: <input id="timeout" type="text" value="60" style="width:46px;margin:0;padding:4px"/> с</span>
+
+<main>
+  <section>
+    <div class="card">
+      <h2>Бизнес-требования</h2>
+      <p class="hint">Единственный предметный вход конвейера. Вставьте текст или выберите кейс.</p>
+      <select id="preset"><option value="">Свои требования</option></select>
+      <label class="field" for="req">Текст требований</label>
+      <textarea id="req" placeholder="Контекст, цель, функциональные требования, ожидаемые компоненты, демонстрационный сценарий…"></textarea>
+      <label class="field">Данные (JSON, CSV) — необязательно</label>
+      <label class="drop" for="files">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+        <span id="filesLabel">Выбрать файлы</span><input type="file" id="files" multiple />
+      </label>
+      <div class="actions">
+        <button class="btn primary" id="start">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4v16l13-8z"/></svg>Запустить конвейер
+        </button>
+        <span class="muted" style="font-size:12.5px">ответы на вопросы: <input id="timeout" class="inline-num" type="text" value="60"/> с</span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Прогоны</h2>
+      <p class="hint">История запусков на этом сервере</p>
+      <ul class="runs" id="runs"><li class="muted">Загрузка…</li></ul>
     </div>
   </section>
 
-  <section class="panel">
-    <h2>Виртуальная команда</h2>
-    <div class="flow"><div id="progress"></div></div>
-    <div class="office" id="office"></div>
-    <div id="results" class="results hidden" style="margin-top:16px">
+  <section>
+    <div class="card">
+      <div class="pipeline-head"><h2>Агенты конвейера</h2><span class="muted" id="pipelineHint">Запустите конвейер или откройте прогон из истории</span></div>
+      <div class="progress"><div id="progress"></div></div>
+      <div class="stages" id="office"><div class="empty">Здесь появится ход работы: аналитик, архитектор, программист, QA, техписатель и DevOps</div></div>
+    </div>
+
+    <div class="card hidden" id="results">
       <h2>Результат</h2>
-      <div class="row" id="resultLinks"></div>
+      <div class="summary" id="summary"></div>
+      <div class="links" id="resultLinks"></div>
+      <div id="qrBox"></div>
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="docs">Документы</button>
+        <button class="tab" data-tab="pipeline">Отчёт конвейера</button>
+      </div>
       <div class="docs">
         <div class="doclist" id="doclist"></div>
-        <div class="doc" id="doc">Выберите документ</div>
+        <div class="doc" id="doc"><div class="empty">Выберите документ</div></div>
       </div>
     </div>
   </section>
 
-  <aside>
-    <div class="panel">
+  <aside class="right">
+    <div class="card">
       <h2>Эффективность</h2>
+      <p class="hint">Как считают организаторы: вызовы, токены, попытки, время</p>
       <div class="metrics">
         <div class="metric"><div class="v" id="mCalls">0</div><div class="k">вызовов модели</div></div>
         <div class="metric"><div class="v" id="mRetries">0</div><div class="k">повторов генерации</div></div>
@@ -113,63 +241,101 @@
         <div class="metric"><div class="v">0</div><div class="k">ручных правок</div></div>
       </div>
     </div>
-    <div class="panel" style="margin-top:16px" id="qPanel">
+    <div class="card" id="qPanel">
       <h2>Уточняющие вопросы</h2>
-      <div id="questions" style="color:var(--muted)">Появятся после анализа требований</div>
+      <p class="hint">Только существенные для архитектуры и сценариев. Пока вы думаете, архитектор работает с ответами по умолчанию.</p>
+      <div id="questions" class="muted" style="font-size:13px">Появятся после анализа требований</div>
     </div>
-    <div class="panel" style="margin-top:16px">
+    <div class="card">
       <h2>Журнал</h2>
-      <div class="log" id="log"></div>
+      <div class="log" id="log"><span class="muted">—</span></div>
     </div>
   </aside>
-</div>
+</main>
 
 <script>
-const AVATARS = { 'Аналитик': '🧑‍💼', 'Архитектор': '🏛️', 'Конвейер': '⚙️', 'Программист': '👩‍💻', 'QA и безопасность': '🛡️', 'Техписатель': '📝', 'DevOps': '🚀' };
+const ICONS = {
+  'Аналитик': '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
+  'Архитектор': '<path d="M3 21h18M5 21V9l7-6 7 6v12M9 21v-6h6v6"/>',
+  'Конвейер': '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-2.7-1.1l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0-1.1-2.7H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.1-2.7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 2.7-1.1V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0 1.1 2.7H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>',
+  'Программист': '<path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/>',
+  'QA и безопасность': '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+  'Техписатель': '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>',
+  'DevOps': '<path d="M4.5 16.5c-1.5 1.3-2 5-2 5s3.7-.5 5-2c.7-.8.7-2.1-.1-2.9a2.2 2.2 0 0 0-2.9-.1zM12 15l-3-3a22 22 0 0 1 2-3.9A12.9 12.9 0 0 1 22 2c0 2.7-.8 7.5-6 11a22.4 22.4 0 0 1-4 2z"/>',
+};
+const icon = (agent) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[agent] || '<circle cx="12" cy="12" r="4"/>'}</svg>`;
 const $ = (id) => document.getElementById(id);
-let presets = [], runId = null, timers = null, answered = false, state = null;
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const fmt = (n) => (n ?? 0).toLocaleString('ru-RU');
+let presets = [], runId = null, timers = null, answered = false, state = null, stream = null, docsLoadedFor = null;
+
+// Тема: системная по умолчанию, выбор запоминается в браузере.
+try { const t = localStorage.getItem('theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+$('theme').onclick = () => {
+  const dark = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() === '#1f1e1c';
+  document.documentElement.dataset.theme = dark ? 'light' : 'dark';
+  try { localStorage.setItem('theme', document.documentElement.dataset.theme); } catch (e) {}
+};
 
 async function loadPresets() {
   presets = await (await fetch('/api/presets')).json();
-  for (const p of presets) $('preset').insertAdjacentHTML('beforeend', `<option value="${p.id}">${esc(p.title)}</option>`);
+  for (const p of presets) $('preset').insertAdjacentHTML('beforeend', `<option value="${esc(p.id)}">${esc(p.title)}</option>`);
 }
 $('preset').onchange = () => { const p = presets.find(x => x.id === $('preset').value); $('req').value = p ? p.requirements : ''; };
+$('files').onchange = () => { const n = $('files').files.length; $('filesLabel').textContent = n ? `Файлов: ${n}` : 'Выбрать файлы'; };
+
+async function loadRuns() {
+  try {
+    const runs = await (await fetch('/api/runs')).json();
+    $('runs').innerHTML = runs.length ? runs.slice(0, 40).map(r => `<li data-run="${esc(r.run_id)}" class="${r.run_id === runId ? 'active' : ''}">
+        <span class="sdot ${esc(r.status)}"></span><span class="name">${esc((r.project || '').split('/').pop() || r.case || 'прогон')}</span>
+        <span class="id">${esc(r.run_id.slice(4, 13).replace('-', ' '))}</span></li>`).join('') : '<li class="muted">Пока нет прогонов</li>';
+    document.querySelectorAll('[data-run]').forEach(li => li.onclick = () => { location.hash = li.dataset.run; });
+  } catch (e) { $('runs').innerHTML = '<li class="muted">Не удалось загрузить</li>'; }
+}
 
 $('start').onclick = async () => {
-  if (!$('req').value.trim()) return alert('Вставьте требования');
+  if (!$('req').value.trim()) { $('req').focus(); return; }
   const fd = new FormData();
   fd.append('requirements', $('req').value);
   fd.append('preset', $('preset').value);
   fd.append('answer_timeout', $('timeout').value || '60');
   for (const f of $('files').files) fd.append('files', f);
   $('start').disabled = true;
-  const r = await (await fetch('/api/runs', { method: 'POST', body: fd })).json();
-  watch(r.run_id);
+  try {
+    const r = await (await fetch('/api/runs', { method: 'POST', body: fd })).json();
+    location.hash = r.run_id;
+  } catch (e) { $('start').disabled = false; }
 };
 
 function watch(id) {
-  runId = id; answered = false;
-  history.replaceState(null, '', '#' + id);
-  const es = new EventSource(`/api/runs/${id}/stream`);
-  es.onmessage = (e) => render(JSON.parse(e.data));
-  es.onerror = () => { es.close(); setTimeout(() => fetch(`/api/runs/${id}`).then(r => r.json()).then(render), 1000); };
+  if (stream) stream.close();
+  runId = id; answered = false; docsLoadedFor = null;
+  $('results').classList.add('hidden');
+  stream = new EventSource(`/api/runs/${id}/stream`);
+  stream.onmessage = (e) => render(JSON.parse(e.data));
+  stream.onerror = () => { stream.close(); setTimeout(() => fetch(`/api/runs/${id}`).then(r => r.json()).then(render), 1000); };
   clearInterval(timers); timers = setInterval(() => state && renderOffice(state), 1000);
+  loadRuns();
 }
 
 function render(s) {
   state = s;
-  $('runStatus').textContent = { running: 'выполняется…', done: 'готово', failed: 'ошибка' }[s.status] || s.status;
-  $('runStatus').className = 'status ' + s.status;
+  const pill = $('runStatus');
+  pill.classList.remove('hidden', 'running', 'done', 'failed'); pill.classList.add(s.status);
+  $('runStatusText').textContent = { running: 'выполняется', done: 'готово', failed: 'ошибка' }[s.status] || s.status;
+  $('pipelineHint').textContent = s.status === 'running' ? 'работают агенты…' : (s.status === 'done' ? 'конвейер завершён' : 'конвейер остановлен');
   renderOffice(s);
   const m = s.metrics || {};
   $('mCalls').textContent = m.calls ?? 0; $('mRetries').textContent = m.retries ?? 0;
   $('mIn').textContent = fmt(m.prompt_tokens); $('mOut').textContent = fmt(m.completion_tokens);
-  $('mTime').textContent = (m.wall_seconds ?? 0).toFixed(0) + ' с';
-  $('log').innerHTML = (s.log || []).slice(-60).map(l => `<div><b>${l.t.toFixed(0)}s</b> ${esc(l.text)}</div>`).join('');
-  $('log').scrollTop = 1e9;
+  $('mTime').textContent = Math.round(m.wall_seconds ?? 0) + ' с';
+  const log = $('log');
+  log.innerHTML = (s.log || []).slice(-80).map(l => `<div><b>${l.t.toFixed(0).padStart(4, ' ')}s</b>${esc(l.text)}</div>`).join('') || '<span class="muted">—</span>';
+  log.scrollTop = 1e9;
   renderQuestions(s);
-  if (s.status !== 'running') { $('start').disabled = false; clearInterval(timers); }
-  if (s.status === 'done') showResults(s);
+  if (s.status !== 'running') { $('start').disabled = false; clearInterval(timers); loadRuns(); }
+  if (s.status === 'done' || (s.status === 'failed' && s.result && s.result.project_dir)) showResults(s);
 }
 
 function renderOffice(s) {
@@ -178,24 +344,24 @@ function renderOffice(s) {
   $('progress').style.width = (done / entries.length * 100) + '%';
   $('office').innerHTML = entries.map(([k, v]) => {
     const t = v.started ? ((v.finished || Date.now() / 1000) - v.started) : 0;
-    return `<div class="agent ${v.status}">
-      <div class="time">${v.started ? t.toFixed(0) + ' с' : ''}</div>
-      <div class="who"><div class="avatar">${AVATARS[v.agent] || '🤖'}</div>
-      <div><div class="role">${esc(v.agent)}</div><div class="task">${esc(v.title)}</div></div></div>
-      <div class="detail">${esc(v.detail || { pending: 'ожидает', running: 'работает…' }[v.status] || '')}</div></div>`;
+    const detail = v.detail || { pending: 'ожидает', running: 'работает…', skipped: 'пропущено' }[v.status] || '';
+    return `<div class="stage ${v.status}">
+      <div class="mark">${v.status === 'done' ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>' : icon(v.agent)}</div>
+      <div><div class="who">${esc(v.agent)} <span class="what">· ${esc(v.title)}</span></div><div class="detail ${v.status === 'pending' ? 'muted' : ''}">${esc(detail)}</div></div>
+      <div class="time">${v.started ? Math.round(t) + ' с' : ''}</div></div>`;
   }).join('');
 }
 
 function renderQuestions(s) {
   const qs = s.questions || [];
   if (!qs.length) return;
-  const waiting = s.stages.clarify.status === 'running' && !answered;
+  const waiting = s.stages.clarify && s.stages.clarify.status === 'running' && !answered;
   $('questions').innerHTML = qs.map(q => `<div class="question">
-      <div><span class="badge ${q.impact}">${q.impact}</span> <span class="badge">${(q.affects || []).join(', ')}</span></div>
+      <div><span class="badge ${esc(q.impact)}">${esc(q.impact)}</span> <span class="badge">${esc((q.affects || []).join(', '))}</span></div>
       <div class="q">${esc(q.question)}</div>
       <div class="def">По умолчанию: ${esc(q.default_answer)} — ${esc(q.rationale)}</div>
-      ${waiting ? `<input type="text" data-q="${q.id}" placeholder="Ваш ответ (пусто — по умолчанию)"/>` : `<div>✔ ${esc(q.answer || q.default_answer)}</div>`}
-    </div>`).join('') + (waiting ? `<button id="sendAnswers">Отправить ответы</button>` : '');
+      ${waiting ? `<input type="text" data-q="${esc(q.id)}" placeholder="Ваш ответ (пусто — по умолчанию)"/>` : `<div style="font-size:13px">✓ ${esc(q.answer || q.default_answer)}</div>`}
+    </div>`).join('') + (waiting ? `<button class="btn primary" id="sendAnswers">Отправить ответы</button>` : '');
   if (waiting) $('sendAnswers').onclick = async () => {
     const answers = {};
     document.querySelectorAll('[data-q]').forEach(i => { if (i.value.trim()) answers[i.dataset.q] = i.value.trim(); });
@@ -204,59 +370,120 @@ function renderQuestions(s) {
   };
 }
 
+function tile(k, v, cls = '') { return `<div class="tile"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`; }
+
 async function showResults(s) {
   $('results').classList.remove('hidden');
-  const r = s.result || {};
+  const r = s.result || {}, st = s.stages || {}, m = s.metrics || {};
+  const verify = (st.verify && st.verify.detail) || '';
+  const demo = (s.log || []).map(l => l.text.match(/Демо-сценарий: (\d+)\/(\d+)/)).filter(Boolean).pop();
+  $('summary').innerHTML = [
+    tile('Сборка backend', r.build_ok ? 'успешно' : 'ошибки', r.build_ok ? 'ok' : 'bad'),
+    tile('Автотесты', /Failed:\s+0/.test(verify) ? (verify.match(/Passed:\s+(\d+)/) || [, '✓'])[1] + ' пройдено' : (verify ? 'есть замечания' : '—'), /Failed:\s+0/.test(verify) ? 'ok' : ''),
+    tile('Демо-сценарий', demo ? `${demo[1]} из ${demo[2]} шагов` : '—', demo && demo[1] === demo[2] ? 'ok' : ''),
+    tile('Вызовы / токены', `${m.calls ?? 0} · ${fmt((m.prompt_tokens || 0) + (m.completion_tokens || 0))}`),
+  ].join('');
   $('resultLinks').innerHTML = `
-    <span>Сборка: <b class="status ${r.build_ok ? 'done' : 'failed'}">${r.build_ok ? 'успешно' : 'ошибки'}</b></span>
-    <button class="secondary" id="deployBtn">🚀 Развернуть и открыть</button>
-    <a href="/api/runs/${runId}/archive">⬇ Архив проекта</a>
-    ${r.apk ? `<a href="/api/runs/${runId}/apk">📱 APK</a><img src="/api/runs/${runId}/apk-qr" alt="QR APK" style="width:96px;height:96px;background:#fff;border-radius:8px;padding:4px"/>` : ''}
-    ${r.apk && r.mobile_api ? `<span title="Адрес сервера на экране входа приложения">API для приложения: <code>${esc(r.mobile_api)}</code></span>` : ''}
-    ${r.web_url ? `<a href="${r.web_url}" target="_blank">Стенд: web</a>` : ''}
-    ${r.video ? `<a href="/api/runs/${runId}/media?path=docs/demo.webm" target="_blank">🎬 Видео демо</a>` : ''}
-    <span id="deployInfo" style="color:var(--muted)"></span>`;
+    <button class="btn primary" id="deployBtn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>Развернуть и открыть</button>
+    <a class="btn ghost" href="/api/runs/${runId}/archive">Архив проекта</a>
+    ${r.video ? `<a class="btn ghost" href="/api/runs/${runId}/media?path=docs/demo.webm" target="_blank">Видео демо</a>` : ''}
+    ${r.web_url ? `<a class="btn ghost" href="${esc(r.web_url)}" target="_blank">Стенд: web</a>` : ''}
+    ${r.gitlab_url ? `<a class="btn ghost" href="${esc(r.gitlab_url)}" target="_blank">Репозиторий GitLab</a>` : ''}
+    <span id="deployInfo" class="muted" style="font-size:13px"></span>`;
+  $('qrBox').innerHTML = r.apk ? `<div class="qr"><img src="/api/runs/${runId}/apk-qr" alt="QR-код APK"/>
+      <div><div style="font-weight:600">Android-приложение</div><div class="muted" style="font-size:12.5px;margin:2px 0 8px">Отсканируйте QR-код телефоном или скачайте файл</div>
+      <a class="btn ghost" href="/api/runs/${runId}/apk">Скачать APK</a>
+      ${r.mobile_api ? `<div class="muted" style="font-size:12px;margin-top:8px">Адрес сервера в приложении: <code>${esc(r.mobile_api)}</code></div>` : ''}</div></div>` : '';
   $('deployBtn').onclick = async () => {
     $('deployBtn').disabled = true; $('deployInfo').textContent = 'сборка контейнеров…';
-    const d = await (await fetch(`/api/runs/${runId}/deploy`, { method: 'POST' })).json();
-    $('deployInfo').innerHTML = d.ok ? `<a href="${d.web}" target="_blank">Web-интерфейс</a> · <a href="${d.api}" target="_blank">API</a>` + (d.mobile_api ? ` · API для приложения: <code>${esc(d.mobile_api)}</code>` : '') : 'ошибка развёртывания';
+    try {
+      const d = await (await fetch(`/api/runs/${runId}/deploy`, { method: 'POST' })).json();
+      $('deployInfo').innerHTML = d.ok ? `<a href="${esc(d.web)}" target="_blank">Web-интерфейс</a> · <a href="${esc(d.api)}" target="_blank">API</a>`
+        + (d.mobile_api ? ` · API для приложения: <code>${esc(d.mobile_api)}</code>` : '') : 'ошибка развёртывания';
+    } catch (e) { $('deployInfo').textContent = 'ошибка развёртывания'; }
     $('deployBtn').disabled = false;
   };
+  if (docsLoadedFor === runId) return;
+  docsLoadedFor = runId;
   const docs = await (await fetch(`/api/runs/${runId}/docs`)).json();
-  $('doclist').innerHTML = docs.map(d => `<button class="secondary" data-doc="${d}">${esc(d.replace('docs/', ''))}</button>`).join('');
+  renderDocList(docs, 'docs');
+  document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x === t));
+    renderDocList(docs, t.dataset.tab);
+  });
+}
+
+const DOC_GROUPS = [
+  ['Системный анализ', d => /01-system-analysis|02-product|traceability/.test(d)],
+  ['Архитектура и API', d => /03-architecture|04-api|05-data|06-events|service\.md|asyncapi/.test(d)],
+  ['Решения (ADR)', d => d.includes('/adr/')],
+  ['Методы API', d => d.includes('/api/methods/')],
+  ['Эксплуатация', d => /07-runbook|08-user|09-dev|12-limit/.test(d)],
+  ['Проверки', d => /10-test|11-security/.test(d)],
+  ['Прочее', d => true],
+];
+
+function renderDocList(docs, tab) {
+  const pipeline = docs.filter(d => /pipeline-report|jury-scorecard|docs\/pipeline\//.test(d));
+  const list = tab === 'pipeline' ? pipeline : docs.filter(d => !pipeline.includes(d));
+  const used = new Set(); let html = '';
+  for (const [title, test] of (tab === 'pipeline' ? [['Конвейер', () => true]] : DOC_GROUPS)) {
+    const items = list.filter(d => !used.has(d) && test(d));
+    if (!items.length) continue;
+    items.forEach(d => used.add(d));
+    html += `<div class="group">${title}</div>` + items.map(d => `<button data-doc="${esc(d)}">${esc(d.split('/').pop().replace(/\.md$/, ''))}</button>`).join('');
+  }
+  $('doclist').innerHTML = html || '<div class="muted" style="padding:8px">Документов нет</div>';
   document.querySelectorAll('[data-doc]').forEach(b => b.onclick = () => openDoc(b.dataset.doc));
-  if (docs.includes('docs/jury-scorecard.md')) openDoc('docs/jury-scorecard.md');
+  const first = tab === 'pipeline' ? (list.find(d => d.includes('jury-scorecard')) || list[0]) : (list.find(d => d.includes('01-system-analysis')) || list[0]);
+  if (first) openDoc(first);
 }
 
 async function openDoc(path) {
+  document.querySelectorAll('[data-doc]').forEach(b => b.classList.toggle('active', b.dataset.doc === path));
   const text = await (await fetch(`/api/runs/${runId}/file?path=${encodeURIComponent(path)}`)).text();
-  $('doc').innerHTML = md(text);
+  $('doc').innerHTML = path.endsWith('.md') ? md(text, path.slice(0, path.lastIndexOf('/') + 1)) : `<pre>${esc(text)}</pre>`;
+  $('doc').scrollTop = 0;
 }
 
-function md(src) {
-  const lines = src.split('\n'); let html = '', table = null, code = false;
-  const inline = (t) => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<u>$1</u>');
+function md(src, base = '') {
+  const lines = src.split('\n'); let html = '', table = null, code = false, list = false, details = false;
+  const inline = (t) => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<u>$1</u>');
+  const closeList = () => { if (list) { html += '</ul>'; list = false; } };
   for (const l of lines) {
-    if (l.startsWith('```')) { html += code ? '</pre>' : '<pre>'; code = !code; continue; }
+    if (l.startsWith('```')) {
+      closeList();
+      if (code) { html += details ? '</pre></details>' : '</pre>'; details = false; }
+      else if (l.trim() === '```plantuml') { html += '<details><summary>Исходник PlantUML</summary><pre>'; details = true; }
+      else html += '<pre>';
+      code = !code; continue;
+    }
     if (code) { html += esc(l) + '\n'; continue; }
     if (l.startsWith('|')) {
-      if (/^\|[-| ]+\|$/.test(l.trim())) continue;
+      closeList();
+      if (/^\|[-:| ]+\|$/.test(l.trim())) continue;
       const cells = l.trim().slice(1, -1).split('|');
       if (!table) { html += '<table>'; table = true; html += '<tr>' + cells.map(c => `<th>${inline(c.trim())}</th>`).join('') + '</tr>'; }
       else html += '<tr>' + cells.map(c => `<td>${inline(c.trim())}</td>`).join('') + '</tr>';
       continue;
     } else if (table) { html += '</table>'; table = null; }
-    const h = l.match(/^(#{1,4}) (.*)/);
-    if (h) html += `<h${h[1].length + 1}>${inline(h[2])}</h${h[1].length + 1}>`;
-    else if (/^\s*[-*] /.test(l)) html += `<div>• ${inline(l.replace(/^\s*[-*] /, ''))}</div>`;
+    const h = l.match(/^(#{1,5}) (.*)/);
+    if (h) { closeList(); html += `<h${Math.min(h[1].length + 1, 6)}>${inline(h[2])}</h${Math.min(h[1].length + 1, 6)}>`; continue; }
+    if (/^\s*([-*]|\d+\.) /.test(l)) { if (!list) { html += '<ul>'; list = true; } html += `<li>${inline(l.replace(/^\s*([-*]|\d+\.) /, ''))}</li>`; continue; }
+    closeList();
+    const img = l.match(/^!\[([^\]]*)\]\(([^)]+)\)\s*$/);
+    if (img) { html += `<p><img class="diagram" alt="${esc(img[1])}" src="/api/runs/${runId}/media?path=${encodeURIComponent(base + img[2])}"/></p>`; continue; }
+    if (l.startsWith('> ')) html += `<blockquote>${inline(l.slice(2))}</blockquote>`;
+    else if (l.trim() === '---') html += '<hr style="border:0;border-top:1px solid var(--line);margin:18px 0"/>';
     else if (l.trim()) html += `<p>${inline(l)}</p>`;
   }
+  closeList();
   return html + (table ? '</table>' : '');
 }
 
-const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const fmt = (n) => (n ?? 0).toLocaleString('ru-RU');
 loadPresets();
+loadRuns();
 if (location.hash.length > 1) watch(location.hash.slice(1));
 window.addEventListener('hashchange', () => location.hash.length > 1 && watch(location.hash.slice(1)));
 </script>

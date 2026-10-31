@@ -3,8 +3,23 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
+from pathlib import Path
 
 from ..ir import AppSpec, Entity, Field
+
+TEMPLATES_DIR = Path(__file__).resolve().parents[3] / "templates"
+
+# Типы .NET / NetTopologySuite / ASP.NET, с которыми сущность не должна совпадать по имени.
+FRAMEWORK_TYPES = {
+    "Task", "Action", "Func", "Type", "Object", "String", "Thread", "Timer", "Path", "File", "Directory", "Index",
+    "Range", "Attribute", "Exception", "Guid", "Version", "Encoding", "Environment", "Math", "Convert", "Console",
+    "Random", "Uri", "Json", "Http", "Results", "Endpoint", "Controller", "ControllerBase", "Activity", "Monitor",
+    "Process", "Point", "Polygon", "LineString", "MultiPolygon", "MultiPoint", "MultiLineString", "Geometry",
+    "Coordinate", "Envelope", "Feature", "DateTime", "TimeSpan", "Decimal", "Enum", "Array", "List", "Dictionary",
+    "Startup", "Assembly", "Delegate", "Nullable", "Lazy", "Tuple", "ValueTask", "Claim", "HttpContext", "Role",
+    "Permission", "User", "Session", "Notification", "Event", "Entity", "Model", "Order", "Status", "State",
+}
 
 
 def snake(name: str) -> str:
@@ -36,6 +51,50 @@ def plural(word: str) -> str:
 def table(entity: Entity | str) -> str:
     name = entity if isinstance(entity, str) else entity.name
     return snake(plural(name))
+
+
+def singular(word: str) -> str:
+    if word.endswith("ies"):
+        return word[:-3] + "y"
+    if re.search(r"(s|x|z|ch|sh)es$", word):
+        return word[:-2]
+    return word[:-1] if word.endswith("s") else word
+
+
+@lru_cache
+def declared_types() -> frozenset[str]:
+    """Type names declared by our backend and mock templates (the generated code must not redeclare them)."""
+    names: set[str] = set()
+    for root in (TEMPLATES_DIR / "backend", TEMPLATES_DIR / "mocks"):
+        for p in root.rglob("*"):
+            if p.is_file() and p.suffix in (".j2", ".cs"):
+                names.update(re.findall(r"\b(?:class|record|interface|enum|struct)\s+([A-Z][A-Za-z0-9]+)(?![{\w])",
+                                        p.read_text(encoding="utf-8", errors="ignore")))
+    return frozenset(names)
+
+
+@lru_cache
+def reserved_entity_names() -> frozenset[str]:
+    """Entity names whose generated classes (X, XDto, XService, XFilter, XUpsertRequest, XsController) would clash."""
+    out = set(declared_types()) | FRAMEWORK_TYPES
+    for t in declared_types():
+        for sfx in ("Dto", "Service", "Filter", "UpsertRequest"):
+            if t.endswith(sfx) and len(t) > len(sfx):
+                out.add(t[:-len(sfx)])
+        if t.endswith("Controller") and len(t) > len("Controller"):
+            out.add(singular(t[:-len("Controller")]))
+    return frozenset(out)
+
+
+@lru_cache
+def reserved_member_names() -> frozenset[str]:
+    """Operation / job / event names whose generated classes (XRequest, XResponse, XHandler, XJob, XPayload) would clash."""
+    out = set(declared_types()) | FRAMEWORK_TYPES
+    for t in declared_types():
+        for sfx in ("Request", "Response", "Handler", "Job", "Payload"):
+            if t.endswith(sfx) and len(t) > len(sfx):
+                out.add(t[:-len(sfx)])
+    return frozenset(out)
 
 
 def route(entity: Entity | str) -> str:

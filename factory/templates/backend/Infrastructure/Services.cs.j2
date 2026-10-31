@@ -83,9 +83,17 @@ public sealed class DemoRoutePlanner(AppDbContext db, IGeoService geo) : IDemoRo
 {
     private const double MatchRadius = 25;
 
-    public async Task<DemoRoute> PlanAsync(string entity, int zones, CancellationToken ct)
+    public async Task<DemoRoute> PlanAsync(string? entity, int zones, CancellationToken ct, Guid? target = null)
     {
-        var (table, column) = GeoService.Layers[entity];
+        // Нет геослоя с объектами (зонами) — маршрут вокруг центра карты, чтобы шаги движения всё равно выполнились.
+        if (entity is null || !GeoService.Layers.TryGetValue(entity, out var layer)) return Synthetic([]);
+        var (table, column) = layer;
+        if (target is { } targetId)
+        {
+            // Движение к конкретному объекту сценария (заказ, задача): подъезд и прибытие к его точке.
+            var point = await QueryPointsAsync($"SELECT id, ST_Y(ST_PointOnSurface({column}::geometry)), ST_X(ST_PointOnSurface({column}::geometry)) FROM {table} WHERE id = '{targetId}' AND {column} IS NOT NULL", ct);
+            if (point.Count > 0) return Synthetic(point);
+        }
         var anchors = await QueryPointsAsync($"""
             WITH c AS (SELECT ST_Centroid(ST_Collect({column})) AS p FROM {table})
             SELECT t.id, ST_Y(ST_ClosestPoint(t.{column}, ST_Centroid(t.{column}))), ST_X(ST_ClosestPoint(t.{column}, ST_Centroid(t.{column})))
@@ -133,7 +141,22 @@ public sealed class DemoRoutePlanner(AppDbContext db, IGeoService geo) : IDemoRo
             legs.Add(await FreeLegAsync(entity, chain[^1].Point, exit.Value, ct));
             return new DemoRoute(legs, chain.Select(c => c.Id).ToList());
         }
-        throw new InvalidOperationException("Не удалось построить демонстрационный маршрут");
+        // Объекты слоя далеко друг от друга (например, несколько точек-адресов): едем к ним по прямой.
+        return Synthetic(anchors.Take(Math.Max(zones, 1)).ToList());
+    }
+
+    /// <summary>Маршрут без проверки попадания в зоны: подъезд, к первому объекту, к следующему, отъезд.</summary>
+    private static DemoRoute Synthetic(IReadOnlyList<(Guid Id, GeoPoint Point)> targets)
+    {
+        var first = targets.Count > 0 ? targets[0].Point : new GeoPoint({{ spec.map_center[0] }}, {{ spec.map_center[1] }});
+        var second = targets.Count > 1 ? targets[1].Point : new GeoPoint(first.Lat + 0.004, first.Lon + 0.006);
+        var start = new GeoPoint(first.Lat - 0.006, first.Lon - 0.008);
+        var approach = new GeoPoint(first.Lat - 0.003, first.Lon - 0.004);
+        var away = new GeoPoint(second.Lat + 0.005, second.Lon + 0.007);
+        static IReadOnlyList<GeoPoint> Line(GeoPoint a, GeoPoint b) =>
+            Enumerable.Range(1, 5).Select(i => new GeoPoint(a.Lat + (b.Lat - a.Lat) * i / 5, a.Lon + (b.Lon - a.Lon) * i / 5)).ToList();
+        return new DemoRoute([Line(start, approach), Line(approach, first), Line(first, second), Line(second, away)],
+                             targets.Select(t => t.Id).ToList());
     }
 
     private async Task<bool> ResolvesToAsync(string entity, GeoPoint p, Guid id, CancellationToken ct) =>
@@ -209,7 +232,7 @@ public sealed partial class EventPublisher(AppDbContext db, TimeProvider clock) 
     public Task Publish<TPayload>(TPayload payload, Guid? entityId, CancellationToken ct) where TPayload : IEventPayload =>
         Publish(payload, entityId);
 
-    public Task Publish<TPayload>(TPayload payload, Guid? entityId = null) where TPayload : IEventPayload
+    public async Task Publish<TPayload>(TPayload payload, Guid? entityId = null) where TPayload : IEventPayload
     {
         var meta = EventCatalog.Get<TPayload>();
         var json = JsonSerializer.Serialize(payload, AppJson.Options);
@@ -226,7 +249,8 @@ public sealed partial class EventPublisher(AppDbContext db, TimeProvider clock) 
             OccurredAt = now,
         };
         db.OutboxEvents.Add(ev);
-        if (meta.Notify is not null && meta.RecipientField is not null && Guid.TryParse(node[meta.RecipientField]?.ToString(), out var userId))
+        if (meta.Notify is not null && meta.RecipientField is not null && Guid.TryParse(node[meta.RecipientField]?.ToString(), out var recipient)
+            && await RecipientAsync(recipient) is { } userId)
         {
             db.Notifications.Add(new AppNotification
             {
@@ -238,7 +262,17 @@ public sealed partial class EventPublisher(AppDbContext db, TimeProvider clock) 
                 CreatedAt = now,
             });
         }
-        return Task.CompletedTask;
+    }
+
+    /// <summary>Получатель — учётная запись; если в событии id записи человека (сотрудник, врач), берём его учётную запись.
+    /// Неизвестный id не роняет операцию: событие публикуется без уведомления.</summary>
+    private async Task<Guid?> RecipientAsync(Guid id)
+    {
+        if (db.Users.Local.Any(u => u.Id == id) || await db.Users.AnyAsync(u => u.Id == id)) return id;
+{% for e in spec.entities if e.fields | selectattr("name", "equalto", "userId") | selectattr("ref", "equalto", "User") | list %}
+        if (await db.{{plural(e.name)}}.Where(x => x.Id == id).Select(x => (Guid?)x.UserId).FirstOrDefaultAsync() is { } via{{loop.index}}) return via{{loop.index}};
+{% endfor %}
+        return null;
     }
 
     /// <summary>Дата-время ISO в тексте уведомления показывается по местному времени (ЧЧ:ММ).</summary>
@@ -303,6 +337,7 @@ public sealed class OutboxDispatcher(IServiceScopeFactory scopes, IConfiguration
                         }, stoppingToken);
                     }
                     e.PublishedAt = DateTimeOffset.UtcNow;
+                    {{N}}.Application.Common.AppMetrics.Inc("app_events_published_total", {{N}}.Application.Common.AppMetrics.Label("type", e.Type));
                 }
                 if (batch.Count > 0) await db.SaveChangesAsync(stoppingToken);
             }
@@ -417,6 +452,9 @@ public sealed class JobRunner(IServiceScopeFactory scopes, ILogger<JobRunner> lo
                 try
                 {
                     await job.RunAsync(ct);
+                    // Событие, опубликованное после последнего SaveChangesAsync задачи, тоже сохраняется.
+                    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    if (db.ChangeTracker.HasChanges()) await db.SaveChangesAsync(ct);
                 }
                 catch (Exception ex) when (!ct.IsCancellationRequested)
                 {

@@ -116,11 +116,14 @@ public sealed class Seeder(AppDbContext db, IPasswordHasher<AppUser> hasher, ICo
             if (exists) continue;
             try
             {
-                foreach (var row in block.GetProperty("rows").EnumerateArray())
+                var rows = block.GetProperty("rows");
+                var index = 0;
+                foreach (var row in rows.EnumerateArray())
                 {
                     var entity = (EntityBase)row.Deserialize(type, SeedJson)!;
-                    entity.CreatedAt = now;
-                    entity.UpdatedAt = now;
+                    // Порядок создания = порядок в тестовых данных: «первая запись» в демо предсказуема.
+                    entity.CreatedAt = now.AddSeconds(index++ - rows.GetArrayLength());
+                    entity.UpdatedAt = entity.CreatedAt;
                     db.Add(entity);
                 }
                 await db.SaveChangesAsync(ct);
@@ -147,7 +150,16 @@ public sealed class Seeder(AppDbContext db, IPasswordHasher<AppUser> hasher, ICo
     {
         var dir = cfg["Seed:DataDir"] ?? Path.Combine(AppContext.BaseDirectory, "seed-data");
 {% for ds in dataset_vms %}
-        await Import{{ds.Name}}Async(Path.Combine(dir, "{{ds.file}}"), ct);
+        try
+        {
+            await Import{{ds.Name}}Async(Path.Combine(dir, "{{ds.file}}"), ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Ошибка в данных не должна останавливать сервис: импорт пропускается, причина — в журнале.
+            log.LogError(ex, "Import of {{ds.file}} into {{ds.entity}} failed, skipping");
+            db.ChangeTracker.Clear();
+        }
 {% endfor %}
         await Task.CompletedTask;
     }
@@ -163,17 +175,18 @@ public sealed class Seeder(AppDbContext db, IPasswordHasher<AppUser> hasher, ICo
             return;
         }
         using var doc = JsonDocument.Parse(await File.ReadAllBytesAsync(path, ct));
-        var records = Find(doc.RootElement, "{{ds.records_path}}");
-        if (records.ValueKind != JsonValueKind.Array) return;
         var now = clock.GetUtcNow();
         var count = 0;
-        foreach (var r in records.EnumerateArray())
+        foreach (var r in Records(doc.RootElement, "{{ds.records_path}}"))
         {
             var e = new {{ds.entity}} { CreatedAt = now, UpdatedAt = now };
 {% for m in ds.assignments %}
             e.{{m.Name}} = {{m.expr}};
 {% endfor %}
             db.{{ds.set}}.Add(e);
+{% for c in ds.children %}
+            foreach (var cr in Records(r, "{{c.rel_path}}")) db.{{c.set}}.Add(Child{{c.Name}}(cr, e.Id, now));
+{% endfor %}
             if (++count % 1000 == 0)
             {
                 await db.SaveChangesAsync(ct);
@@ -185,6 +198,46 @@ public sealed class Seeder(AppDbContext db, IPasswordHasher<AppUser> hasher, ICo
         log.LogInformation("Imported {Count} rows into {{ds.entity}} from {{ds.file}}", count);
     }
 {% endfor %}
+
+{% for ds in dataset_vms %}{% for c in ds.children %}
+
+    /// <summary>Вложенная запись «{{c.name}}» ({{c.entity}}) внутри записи {{ds.entity}}.</summary>
+    private static {{c.entity}} Child{{c.Name}}(JsonElement r, Guid parentId, DateTimeOffset now)
+    {
+        var e = new {{c.entity}} { CreatedAt = now, UpdatedAt = now };
+{% if c.parent_ref %}
+        e.{{c.parent_ref}} = parentId;
+{% endif %}
+{% for m in c.assignments %}
+        e.{{m.Name}} = {{m.expr}};
+{% endfor %}
+        return e;
+    }
+{% endfor %}{% endfor %}
+
+    /// <summary>Записи по пути вида data.items; массивы на промежуточных уровнях разворачиваются.</summary>
+    private static IEnumerable<JsonElement> Records(JsonElement root, string path)
+    {
+        IEnumerable<JsonElement> level = [root];
+        foreach (var part in path.Split('.', StringSplitOptions.RemoveEmptyEntries))
+        {
+            level = level.SelectMany(Flat)
+                .Where(x => x.ValueKind == JsonValueKind.Object && x.TryGetProperty(part, out _))
+                .Select(x => x.GetProperty(part));
+        }
+        return level.SelectMany(Flat).Where(x => x.ValueKind == JsonValueKind.Object).ToList();
+    }
+
+    private static List<JsonElement> Flat(JsonElement x) =>
+        x.ValueKind == JsonValueKind.Array ? x.EnumerateArray().ToList() : [x];
+
+    /// <summary>Точка из двух числовых полей записи (широта, долгота).</summary>
+    private static Point? P(JsonElement r, string lat, string lon) =>
+        D(r, lat) is { } la && D(r, lon) is { } lo && la is >= -90 and <= 90 && lo is >= -180 and <= 180
+            ? new Point((double)lo, (double)la) { SRID = 4326 } : null;
+
+    /// <summary>Центр карты — для обязательной точки, которой нет в данных (запись видна, координату можно исправить).</summary>
+    private static Point Center() => new({{ spec.map_center[1] }}, {{ spec.map_center[0] }}) { SRID = 4326 };
 
     private static JsonElement Find(JsonElement root, string path)
     {
@@ -260,6 +313,10 @@ public sealed class Seeder(AppDbContext db, IPasswordHasher<AppUser> hasher, ICo
     {
         try
         {
+            // Объект {lat, lon} вместо GeoJSON.
+            if (Find(r, path) is { ValueKind: JsonValueKind.Object } obj && P(obj, obj.TryGetProperty("lat", out _) ? "lat" : "latitude",
+                    obj.TryGetProperty("lon", out _) ? "lon" : obj.TryGetProperty("lng", out _) ? "lng" : "longitude") is { } point)
+                return point;
             Geometry? g = format == "wkt"
                 ? (S(r, path) is { Length: > 0 } text ? Wkt.Read(text) : null)
                 : (J(r, path) is { } json ? JsonSerializer.Deserialize<Geometry>(json, GeoJson.Options) : null);

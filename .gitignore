@@ -12,3 +12,4 @@ obj/
 *.apk
 .gradle/
 factory/docker/android-builder/warm/
+runs-vm/

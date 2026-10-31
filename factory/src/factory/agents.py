@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 
+from typing import Literal
+
 from pydantic import BaseModel, Field as PField
 
-from .ir import (AcceptanceCriterion, Analysis, Dataset, Demo, Entity, Event, Integration, Job, Operation, Permission,
-                 Screen)
+from .ir import (AcceptanceCriterion, Ambiguity, Analysis, Dataset, Demo, Entity, Event, Integration, Job, Operation,
+                 Permission, Requirement, Role, Scenario, Screen)
 from .examples import BEHAVIOUR_EXAMPLE, DOMAIN_EXAMPLE
 from .llm import LLM
 
@@ -18,11 +20,14 @@ ANALYST_SYSTEM = """Ты — ведущий системный аналитик 
 Правила:
 - Функциональные требования (FR-001, FR-002, …): одно атомарное, проверяемое требование на пункт. Требования заказчика
   помечай source=customer. Выведенные тобой (необходимые для работы, но явно не написанные) — source=assumption.
+  trace — трассировка к бизнес-требованиям: номер раздела/пункта или короткая цитата.
 - Не выдумывай функции, которых нет в требованиях. Нефункциональные требования (NFR-001…) — конкретные и измеримые.
 - Роли: name — PascalCase на английском (Dispatcher, Driver, Manager), title — по-русски, demo_login — латиница в нижнем
   регистре (dispatcher). Обычно 2–3 роли: администрирующая (видит всё) и полевая/пользовательская (видит своё).
-- Критерии приёмки (AC-001…): минимум один на каждое FR, в формате Given/When/Then с конкретными значениями (числа,
-  статусы, тексты уведомлений). test_level: api для проверяемых через API, ui для интерфейсных.
+- Критерии приёмки: у каждого FR 1–2 критерия в поле acceptance, в формате Given/When/Then с конкретными значениями
+  (числа, статусы, тексты уведомлений). test_level: api для проверяемых через API, ui для интерфейсных.
+- Сценарии использования (UC-001…) — в формате UseCase: actor, preconditions, steps (основной поток), alternatives,
+  exceptions (ошибки и реакция системы), postconditions, expected_result. Покрой ключевые потоки каждой роли.
 - Неоднозначности: не больше 5, только существенно влияющие на архитектуру, безопасность или пользовательский сценарий.
   Для каждой: impact, затрагиваемые FR, варианты, default_answer (разумное решение по умолчанию) и обоснование.
 - Допущения (assumptions) явно отделены от требований заказчика.
@@ -87,6 +92,7 @@ BEHAVIOUR_RULES = """Правила поведения:
   стандартный CRUD: entity и args — значения полей; используй, если для создания нет отдельной операции),
   operation (вызов операции, args — тело запроса),
   advance_time (minutes — сдвиг часов, чтобы наступили события по времени), transition (entity, transition),
+  view (entity — роль просматривает список/историю записей, например «события отображаются в интерфейсе»),
   expect (args {event: ИмяСобытия} — проверка, что событие произошло). Для шагов, где по сценарию система должна
   отказать (конфликт, нарушение правила), ставь expect_error=true.
 - Моменты времени во входах операций — одно поле type=datetime (ISO 8601), не разделяй дату и время на два поля.
@@ -121,9 +127,57 @@ def _req_block(requirements: str, profile: str, answers: str = "") -> str:
     return "\n\n".join(parts)
 
 
+class AnalystCriterion(BaseModel):
+    given: str
+    when: str
+    then: str
+    test_level: Literal["unit", "api", "ui"] = "api"
+
+
+class AnalystRequirement(BaseModel):
+    id: str = PField(description="FR-001")
+    text: str
+    priority: Literal["must", "should", "could"] = "must"
+    source: Literal["customer", "assumption"] = "customer"
+    trace: str = PField(default="", description="Откуда в БТ: номер раздела/пункта или цитата до 8 слов; для допущений — почему нужно")
+    acceptance: list[AnalystCriterion] = PField(min_length=1, description="1–2 критерия приёмки этого FR")
+
+
+class AnalystOutput(BaseModel):
+    """Ответ аналитика: критерии приёмки вложены в FR, чтобы ни одно требование не осталось без проверки."""
+
+    product_name: str
+    summary: str
+    goals: list[str]
+    scope_in: list[str]
+    scope_out: list[str]
+    roles: list[Role]
+    functional: list[AnalystRequirement]
+    non_functional: list[Requirement]
+    constraints: list[str]
+    scenarios: list[Scenario]
+    integrations: list[str]
+    security: list[str]
+    risks: list[str]
+    ambiguities: list[Ambiguity]
+    assumptions: list[str]
+    components: dict[str, bool] = PField(default_factory=lambda: {"web": True, "mobile": False, "kafka": False,
+                                                                  "geo": False})
+
+    def to_analysis(self) -> Analysis:
+        functional, acceptance = [], []
+        for fr in self.functional:
+            functional.append(Requirement(id=fr.id, text=fr.text, priority=fr.priority, source=fr.source, trace=fr.trace))
+            for ac in fr.acceptance:
+                acceptance.append(AcceptanceCriterion(id=f"AC-{len(acceptance) + 1:03d}", fr=fr.id, given=ac.given,
+                                                      when=ac.when, then=ac.then, test_level=ac.test_level))
+        return Analysis(**self.model_dump(exclude={"functional"}), functional=functional, acceptance=acceptance)
+
+
 async def analyze(llm: LLM, requirements: str, profile: str, *, think: bool = False) -> Analysis:
-    return await llm.structured("analyst", ANALYST_SYSTEM, _req_block(requirements, profile), Analysis,
-                                think=think, max_tokens=14000)
+    out = await llm.structured("analyst", ANALYST_SYSTEM, _req_block(requirements, profile), AnalystOutput,
+                               think=think, max_tokens=9000, max_tokens_cap=14000)
+    return out.to_analysis()
 
 
 class AcceptanceList(BaseModel):
@@ -137,7 +191,7 @@ async def complete_acceptance(llm: LLM, requirements: str, analysis: Analysis, m
         "analyst.acceptance", ANALYST_SYSTEM,
         f"## Бизнес-требования\n\n{requirements}\n\n## ФТ без критериев приёмки\n\n{frs}\n\n"
         f"Напиши по 1–2 критерия приёмки на каждое из этих ФТ (Given/When/Then с конкретными значениями). "
-        f"Нумерация id с AC-{start:03d}.", AcceptanceList, max_tokens=6000)
+        f"Нумерация id с AC-{start:03d}.", AcceptanceList, max_tokens=4000)
     analysis.acceptance += extra.acceptance
     return analysis
 
@@ -151,9 +205,46 @@ def answers_text(analysis: Analysis) -> str:
 
 
 def _analysis_brief(a: Analysis) -> str:
-    return json.dumps(a.model_dump(include={"product_name", "summary", "roles", "functional", "non_functional",
-                                            "integrations", "security", "acceptance", "components"}),
-                      ensure_ascii=False)
+    """Выжимка анализа для архитектора: только то, что влияет на модель (без критериев приёмки и НФТ)."""
+    lines = [f"Продукт: {a.product_name}. {a.summary}",
+             "Компоненты: " + ", ".join(k for k, v in a.components.items() if v),
+             "Роли: " + "; ".join(f"{r.name} ({r.title}, вход {r.demo_login})" for r in a.roles),
+             "Функциональные требования:"]
+    lines += [f"- {fr.id}: {fr.text}" for fr in a.functional]
+    if a.integrations:
+        lines.append("Интеграции: " + "; ".join(a.integrations))
+    if a.security:
+        lines.append("Безопасность: " + "; ".join(a.security))
+    return "\n".join(lines)
+
+
+def _field_brief(f) -> str:
+    kind = f.type
+    if f.type == "ref":
+        kind = f"ref {f.ref}"
+    elif f.type == "enum":
+        kind = "enum(" + "|".join(f.enum_values or []) + ")"
+    flags = [x for x, on in (("обяз.", f.required), ("readonly", f.readonly), ("unique", f.unique)) if on]
+    return f"{f.name}:{kind}" + (f"[{','.join(flags)}]" if flags else "")
+
+
+def domain_brief(d: DomainModel) -> str:
+    """Модель данных компактным текстом (вместо JSON): имена, типы, связи, статусы, права."""
+    lines = []
+    for e in d.entities:
+        lines.append(f"- {e.name} ({e.title}): " + ", ".join(_field_brief(f) for f in e.fields))
+        if e.owner_field:
+            lines.append(f"  владелец записи: {e.owner_field}")
+        if e.lifecycle:
+            lc = e.lifecycle
+            lines.append(f"  статусы {lc.field}, начальный {lc.initial}; переходы: " + "; ".join(
+                f"{t.name}: {'|'.join(t.from_states)}→{t.to} ({', '.join(t.roles)})" for t in lc.transitions))
+    lines.append("Права: " + "; ".join(
+        f"{p.role}/{p.entity}: {','.join(p.actions)}" + (f" по {p.owner_field}" if p.owner_field else "")
+        for p in d.permissions))
+    for i in d.integrations:
+        lines.append(f"Интеграция {i.name} ({i.real_system}): " + ", ".join(m.name for m in i.methods))
+    return "\n".join(lines)
 
 
 async def design(llm: LLM, requirements: str, profile: str, analysis: Analysis) -> tuple[DomainModel, BehaviourModel]:
@@ -162,16 +253,15 @@ async def design(llm: LLM, requirements: str, profile: str, analysis: Analysis) 
     domain = await llm.structured(
         "architect.domain", ARCHITECT_RULES,
         f"## Пример формата (другая предметная область, НЕ копируй содержание)\n\n{json.dumps(DOMAIN_EXAMPLE, ensure_ascii=False)}\n\n"
-        f"{ctx}\n\n## Результат анализа (JSON)\n\n{brief}\n\nСпроектируй модель данных: сущности, права, датасеты, интеграции.",
-        DomainModel, max_tokens=14000)
+        f"{ctx}\n\n## Результат анализа\n\n{brief}\n\nСпроектируй модель данных: сущности, права, датасеты, интеграции.",
+        DomainModel, max_tokens=7000, max_tokens_cap=12000)
     behaviour = await llm.structured(
         "architect.behaviour", ARCHITECT_RULES + "\n\n" + BEHAVIOUR_RULES,
         f"## Пример формата (другая предметная область, НЕ копируй содержание)\n\n{json.dumps(BEHAVIOUR_EXAMPLE, ensure_ascii=False)}\n\n"
-        f"{ctx}\n\n## Результат анализа (JSON)\n\n{brief}\n\n## Модель данных (JSON)\n\n"
-        f"{domain.model_dump_json(exclude={'datasets'})}\n\n"
+        f"{ctx}\n\n## Результат анализа\n\n{brief}\n\n## Модель данных\n\n{domain_brief(domain)}\n\n"
         "Спроектируй поведение: операции, события (с уведомлениями из требований), фоновые задачи (контроль сроков), "
         "экраны и демо-сценарий строго по шагам раздела «Демонстрационный сценарий».",
-        BehaviourModel, max_tokens=14000)
+        BehaviourModel, max_tokens=8000, max_tokens_cap=14000)
     return domain, behaviour
 
 
@@ -181,7 +271,7 @@ async def repair(llm: LLM, stage: str, model: type[BaseModel], current: BaseMode
         f"{stage}.repair", ARCHITECT_RULES + "\n\n" + BEHAVIOUR_RULES,
         f"{context}\n\n## Текущая версия (JSON)\n\n{current.model_dump_json()}\n\n## Ошибки проверки\n\n"
         + "\n".join(f"- {e}" for e in errors) + "\n\nИсправь только эти ошибки и верни полный JSON.",
-        model, max_tokens=14000)
+        model, max_tokens=8000, max_tokens_cap=14000)
 
 
 async def gather(*aws):
