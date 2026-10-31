@@ -333,7 +333,7 @@ class Pipeline:
         if out.exists():
             for child in out.iterdir():
                 if child.name not in ("backend",):
-                    shutil.rmtree(child) if child.is_dir() else child.unlink()
+                    builder.remove_tree(child) if child.is_dir() else child.unlink()
         out.mkdir(parents=True, exist_ok=True)
         self._render_backend(spec, out, logic)
         fgen.generate(spec, out)

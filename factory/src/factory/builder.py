@@ -5,10 +5,30 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 SDK = "mcr.microsoft.com/dotnet/sdk:10.0"
+
+
+def remove_tree(path: Path) -> None:
+    """rmtree that also removes files left by containers running as root (APK build: .gradle, app/build)."""
+    try:
+        shutil.rmtree(path)
+    except PermissionError:
+        parent = path.resolve().parent
+        try:
+            subprocess.run(["docker", "run", "--rm", "-v", f"{parent}:/w", SDK, "rm", "-rf", f"/w/{path.name}"],
+                           capture_output=True, timeout=120)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        if path.exists():
+            # Каталог проекта принадлежит нам: убрать мешающее можно переносом за пределы проекта (out/.trash).
+            trash = parent.parent / ".trash"
+            trash.mkdir(exist_ok=True)
+            path.rename(trash / f"{parent.name}-{path.name}-{os.urandom(3).hex()}")
 ERROR = re.compile(r"^(?P<file>/src/[^(]+)\((?P<line>\d+),(?P<col>\d+)\): error (?P<code>\w+): (?P<msg>.+?)(?: \[/src.*)?$")
 
 

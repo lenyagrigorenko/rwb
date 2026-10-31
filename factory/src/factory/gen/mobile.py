@@ -7,6 +7,7 @@ import re
 import shutil
 from pathlib import Path
 
+from ..builder import remove_tree
 from ..ir import AppSpec
 from .backend import id_aliases
 from .render import TEMPLATES, Renderer
@@ -22,7 +23,7 @@ def ks(value: str | None) -> str:
 def generate(spec: AppSpec, out: Path) -> list[Path]:
     dest = out / "mobile"
     if dest.exists():
-        shutil.rmtree(dest)
+        remove_tree(dest)
     shutil.copytree(TEMPLATES / "mobile" / "base", dest, ignore=lambda d, names: [x for x in names if x in SKIP])
     screens = [s for s in spec.screens if s.platform == "mobile"]
     roles = [r for r in spec.roles if any(r.name in s.roles for s in screens)] or list(spec.roles)

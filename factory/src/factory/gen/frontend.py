@@ -6,6 +6,7 @@ import json
 import shutil
 from pathlib import Path
 
+from ..builder import remove_tree
 from ..ir import AppSpec
 from . import naming as n
 from .backend import admin_roles, id_aliases
@@ -62,7 +63,7 @@ def app_spec(spec: AppSpec) -> dict:
 def generate(spec: AppSpec, out: Path) -> list[Path]:
     dest = out / "frontend"
     if dest.exists():
-        shutil.rmtree(dest)
+        remove_tree(dest)
     shutil.copytree(TEMPLATES / "frontend" / "base", dest, ignore=lambda d, names: [x for x in names if x in SKIP])
     r = Renderer("frontend", spec)
     r.render("app-spec.ts.j2", dest / "src" / "app" / "generated" / "app-spec.ts",
