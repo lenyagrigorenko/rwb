@@ -41,7 +41,8 @@ def _project(slug: str) -> dict:
     except urllib.error.HTTPError as e:
         if e.code != 404:
             raise
-    payload: dict = {"name": slug, "path": slug, "visibility": os.environ.get("GITLAB_VISIBILITY", "internal")}
+    # private: в приватной группе площадки проект с видимостью internal создать нельзя.
+    payload: dict = {"name": slug, "path": slug, "visibility": os.environ.get("GITLAB_VISIBILITY", "private")}
     if group:
         payload["namespace_id"] = _api("GET", f"/groups/{urllib.parse.quote(group, safe='')}")["id"]
     return _api("POST", "/projects", payload)
@@ -55,10 +56,13 @@ async def publish(project_dir: Path, slug: str, message: str) -> tuple[bool, str
         info = _project(slug)
     except Exception as e:  # noqa: BLE001 — сообщение без токена
         return False, f"GitLab API: {str(e)[:200]}"
-    http_url = info.get("http_url_to_repo", "")
-    parts = urllib.parse.urlsplit(http_url)
+    # Адрес — из GITLAB_URL: external_url сервера может указывать на имя, недоступное с этой машины.
+    base = urllib.parse.urlsplit(os.environ["GITLAB_URL"].rstrip("/"))
+    path = f"{base.path}/{info['path_with_namespace']}"
+    http_url = urllib.parse.urlunsplit((base.scheme, base.netloc, path + ".git", "", ""))
+    web_url = urllib.parse.urlunsplit((base.scheme, base.netloc, path, "", ""))
     token = urllib.parse.quote(os.environ["GITLAB_TOKEN"], safe="")
-    push_url = urllib.parse.urlunsplit((parts.scheme, f"oauth2:{token}@{parts.netloc}", parts.path, "", ""))
+    push_url = urllib.parse.urlunsplit((base.scheme, f"oauth2:{token}@{base.netloc}", path + ".git", "", ""))
     git = ["git", "-C", str(project_dir), "-c", "user.name=Агентский конвейер", "-c", "user.email=factory@localhost",
            "-c", f"http.sslVerify={'false' if os.environ.get('GITLAB_INSECURE', '1') == '1' else 'true'}"]
     if not (project_dir / ".git").exists():
@@ -68,4 +72,4 @@ async def publish(project_dir: Path, slug: str, message: str) -> tuple[bool, str
     code, out = await run([*git, "push", "-q", "--force", push_url, "HEAD:main"], timeout=600)
     if code != 0:
         return False, "git push: " + out.replace(token, "***")[-300:]
-    return True, info.get("web_url", http_url)
+    return True, web_url

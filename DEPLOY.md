@@ -211,19 +211,28 @@ VPN на телефоне выключите: он перехватывает с
 
 ## 8. GitLab
 
-1. В локальном GitLab создайте два проекта: `factory` (сам конвейер) и `spb-parking-assistant` (результат кейса 1).
-2. Фабрика (репозиторий уже есть, добавить второй remote):
+GitLab площадки: `http://10.10.10.10:8181`, группа `team-vm23` (приватная). Токен — в `factory/.env`, не в git.
+
+1. Автопубликация проектов фабрикой — в `factory/.env`:
    ```bash
-   cd ~/rwb && git remote add gitlab <URL проекта factory> && git push gitlab main
+   GITLAB_URL=http://10.10.10.10:8181
+   GITLAB_TOKEN=<API-токен glpat-…>
+   GITLAB_GROUP=team-vm23
    ```
-3. Результат кейса 1:
+   Проект создаётся приватным (в приватной группе `internal` запрещён), код пушится, CI стартует сам.
+2. Runner на VM — **docker executor** (не shell: в CI задачи идут в образах .NET/Node/Android, на VM их тулчейнов нет):
    ```bash
-   cd ~/rwb/out/spb-parking-assistant && git init -b main && git add . && git commit -m "Сгенерировано фабрикой"
-   git remote add origin <URL проекта> && git push -u origin main
+   sudo gitlab-runner register --non-interactive --url http://10.10.10.10:8181 --token <glrt-…> \
+     --executor docker --docker-image alpine:3.20 --docker-privileged \
+     --docker-pull-policy if-not-present --docker-disable-cache
    ```
-4. CI сгенерированного проекта (`.gitlab-ci.yml`) требует GitLab Runner с docker executor; для интеграционных
-   тестов и сборки образов — `privileged = true` (docker-in-docker). Без runner'а артефакты всё равно есть в
-   репозитории: отчёты в `docs/`, видео `docs/demo.webm`.
+   `if-not-present` — брать локальные образы (сборщик Android `factory/android-builder:1` есть только на VM);
+   `disable-cache` — иначе том `/cache` закроет прогретый кэш Gradle внутри образа; `privileged` — Docker-in-Docker
+   для интеграционных тестов и тестового стенда (эти задачи необязательные: без них pipeline зелёный с предупреждением).
+3. Код фабрики (push по новому имени создаёт проект):
+   ```bash
+   cd ~/rwb && git push "http://vm23:<токен>@10.10.10.10:8181/team-vm23/factory.git" main
+   ```
 
 ## 9. Если на VM нет интернета или Docker
 
