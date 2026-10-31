@@ -1,6 +1,6 @@
 # {{m.method}} {{m.url}} — {{m.title}}
 
-> Описание метода по шаблону API. Источник истины — OpenAPI (`/openapi/v1.json`, копия `docs/api/openapi.json`).
+> Описание метода по шаблону API. Источник истины — OpenAPI (`/openapi/v1.json`{{ ", копия `docs/api/openapi.json`" if openapi_file }}).
 
 ## Основная информация
 
@@ -8,7 +8,7 @@
 |---|---|
 | Наименование метода | `{{m.method}} {{m.url}}` ({{m.name}}) |
 | Назначение метода | {{m.purpose}} |
-| Ссылка на Swagger | `/scalar#tag/{{m.tag}}` (интерактивно), `docs/api/openapi.json` |
+| Ссылка на Swagger | `/scalar#tag/{{m.tag}}` (интерактивно), {{ "`docs/api/openapi.json`" if openapi_file else "`/openapi/v1.json`" }} |
 | Exchange pattern | Синхронный запрос — ответ (HTTP/1.1, JSON){% if m.events %}; асинхронно публикует события {{ m.events | join(', ') }}{% endif %} |
 
 ## История изменений

@@ -65,7 +65,7 @@
 | 2 | Описание архитектуры | 1.0 | `docs/03-architecture.md`, решения — `docs/adr/` |
 | 3 | Роли и характеристика пользователей | 1.0 | раздел 3.2.2 этого документа |
 | 4 | Описание сервиса | 1.0 | `docs/service.md` |
-| 5 | Описание API (OpenAPI и методы) | 1.0 | `docs/api/openapi.json`, `docs/api/methods/` |
+| 5 | Описание API (OpenAPI и методы) | 1.0 | {{ "`docs/api/openapi.json`" if openapi_file else "`/openapi/v1.json` на стенде" }}, `docs/api/methods/` |
 | 6 | Модель данных | 1.0 | `docs/05-data-model.md` |
 {% if spec.events %}
 | 7 | Модель событий (AsyncAPI) | 1.0 | `docs/asyncapi.yaml`, `docs/06-events.md` |
@@ -316,7 +316,7 @@ Web-интерфейс построен на UI Kit Angular Material (компо
 #### 3.1.2. Ссылки на макеты (Figma)
 
 Неприменимо: макеты в Figma не создавались. Интерфейс генерируется по модели приложения на компонентах UI Kit
-(Angular Material), поэтому спецификация ЭФ выше является источником истины. Скриншоты экранов — `docs/screenshots/`
+(Angular Material), поэтому спецификация ЭФ выше является источником истины. Скриншоты экранов — `docs/media/`
 (если выполнялась запись демо), видео прохождения сценария — `docs/demo.webm`.
 
 ### 3.2 Описание Backend
@@ -403,7 +403,7 @@ entity "{{table(e)}}" as {{e.name}} {
 #### 3.2.4 Описание API
 
 Методы описаны в подчинённой структуре по шаблону API — `docs/api/methods/`; спецификация OpenAPI — `/openapi/v1.json`
-(копия `docs/api/openapi.json`), интерактивно — `/scalar`. Endpoint-ы — существительные, действие задаёт HTTP-метод.
+{{- " (копия `docs/api/openapi.json`)" if openapi_file }}, интерактивно — `/scalar`. Endpoint-ы — существительные, действие задаёт HTTP-метод.
 
 | Метод | Endpoint | Назначение | Роли | Описание |
 |---|---|---|---|---|

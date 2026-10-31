@@ -141,6 +141,20 @@ async def run_demo(spec: AppSpec, api: str, timeout: float = 240) -> dict:
         return status
 
 
+async def save_openapi(api: str, dest: Path) -> bool:
+    """Copy of the stand's OpenAPI document for the repository (docs/api/openapi.json)."""
+    try:
+        async with httpx.AsyncClient(base_url=api, timeout=30) as client:
+            resp = await client.get("/openapi/v1.json")
+            resp.raise_for_status()
+            doc = resp.json()
+    except (httpx.HTTPError, ValueError):
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+    return True
+
+
 def failed_targets(spec: AppSpec, status: dict) -> dict[str, list[str]]:
     """Map failed demo steps to the operation/job responsible for them."""
     if not spec.demo:

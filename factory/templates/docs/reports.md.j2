@@ -7,7 +7,7 @@
 - Ограничение частоты: 1200 запросов/мин на пользователя, 30/мин на вход; превышение — 429.
 - Идемпотентность: заголовок `Idempotency-Key` для POST — повтор возвращает сохранённый ответ (`Idempotent-Replayed: true`).
 - Журналирование: каждый запрос пишется в структурированный JSON-лог с `X-Correlation-Id`.
-- Спецификация OpenAPI 3.1: `docs/api/openapi.json` и `GET /openapi/v1.json`.
+- Спецификация OpenAPI 3.1: {{ "`docs/api/openapi.json` и " if openapi_file }}`GET /openapi/v1.json`.
 
 ## Служебные эндпоинты
 

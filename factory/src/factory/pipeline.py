@@ -436,6 +436,9 @@ class Pipeline:
         api = f"http://localhost:{ports['API_PORT']}"
         self.state.result["web_url"] = f"http://localhost:{ports['WEB_PORT']}"
         self.state.result["api_url"] = api
+        # Операции и модель при самопочинке не меняются — спецификация API со стенда окончательная.
+        if await runtime.save_openapi(api, out / "docs" / "api" / "openapi.json"):
+            self.log("Спецификация OpenAPI сохранена в docs/api/openapi.json")
         best: tuple[int, dict, dict] | None = None
         prev_targets: set[str] = set()
         stalled = False
@@ -542,4 +545,8 @@ class Pipeline:
             src = self.run_dir / name
             if src.exists():
                 shutil.copy(src, dest / name)
+        # Исходные бизнес-требования — ТЗ ссылается на них как на используемый документ.
+        requirements = self.case_dir / "requirements.md"
+        if requirements.exists():
+            shutil.copy(requirements, dest / "requirements.md")
         self.state.result["metrics"] = self.telemetry.summary()

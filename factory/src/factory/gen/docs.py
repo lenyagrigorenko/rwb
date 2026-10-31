@@ -456,6 +456,8 @@ def generate(spec: AppSpec, out: Path, *, run_dir: Path | None = None, verificat
         "topics": sorted({ev.topic for ev in spec.events}),
         "model": os.environ.get("LLM_MODEL", "qwen3.8-27b").split("/")[-1], "today": date.today().isoformat(),
         "glossary": glossary(spec), "ui_screens": ui_screens(spec),
+        # Копию OpenAPI сохраняет проверка стенда; без неё документы ссылаются только на живой /openapi/v1.json.
+        "openapi_file": (out / "docs" / "api" / "openapi.json").exists(),
         "mobile_roles": {r for s in spec.screens if s.platform == "mobile" for r in s.roles},
         "demo_actor": lambda st: next((i + 1 for i, r in enumerate(spec.roles) if r.name in (
             next((o.roles for o in spec.operations if o.name == st.operation), None) or

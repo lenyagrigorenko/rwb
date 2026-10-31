@@ -11,7 +11,7 @@
 | Тип приложения | ASP.NET Core REST API (контроллеры, ProblemDetails, OpenAPI) |
 | Прикладное ПО / Frameworks | .NET 10, C# 14, EF Core 10, Npgsql{% if spec.uses_geo %}, NetTopologySuite{% endif %}{% if spec.events %}, Confluent.Kafka{% endif %} |
 | Системное ПО | Linux (контейнер `mcr.microsoft.com/dotnet/aspnet:10.0`), PostgreSQL 17{% if spec.uses_geo %} + PostGIS{% endif %}{% if spec.events %}, Apache Kafka 3.9 (KRaft){% endif %} |
-| Swagger | `/openapi/v1.json`, интерактивно — `/scalar`; копия в репозитории — `docs/api/openapi.json` |
+| Swagger | `/openapi/v1.json`, интерактивно — `/scalar`{{ "; копия в репозитории — `docs/api/openapi.json`" if openapi_file }} |
 | Архитектура | Сервисная (модульный монолит, Clean Architecture: Domain / Application / Infrastructure / Api){% if spec.events %}, доменные события через transactional outbox в Kafka{% endif %}. Решения — `docs/adr/` |
 
 ## Ссылки
